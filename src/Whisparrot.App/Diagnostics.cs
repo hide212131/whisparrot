@@ -110,8 +110,23 @@ internal static partial class Diagnostics
 
         var native = new NativeRuntime(resources, AppPaths.RuntimeCacheRoot, AppInfo.Version, NativeRuntime.CurrentRid());
         var order = backend == "cpu" ? new[] { "cpu" } : new[] { "vulkan", "cpu" };
+        // --use-settings: config.json の recognition.model と固定 catalog（SHA-256 照合つき）でモデルを解決する（T07/T09 の結線の確認）。
+        Func<ModelTarget>? resolver = null;
+        if (args.Contains("--use-settings"))
+        {
+            var settings = new Whisparrot.Infrastructure.Settings.SettingsService(new Whisparrot.Infrastructure.Settings.JsonSettingsStore(AppPaths.ConfigPath));
+            var net = new Whisparrot.Infrastructure.Network.NetworkContext(() => Whisparrot.Infrastructure.Network.ProxyConfig.Environment, Whisparrot.Infrastructure.Network.ProxyEnvironment.Capture());
+            var models = new Whisparrot.Infrastructure.Models.ModelManager(AppPaths.ModelsDirectory, Whisparrot.Infrastructure.Models.ModelCatalog.Embedded(), net);
+            resolver = () =>
+            {
+                var id = settings.Current.Recognition.Model;
+                var reason = models.CheckReady(id);
+                Console.WriteLine($"model_id={id} ready={(reason is null ? "yes" : reason)}");
+                return new ModelTarget(models.PathOf(id), reason);
+            };
+        }
         using var recognizer = new WhisperRecognizer(new WhisperRecognizerOptions(
-            model, order, native.AvailableBackends));
+            model, order, native.AvailableBackends, ModelResolver: resolver));
         var injector = new ConsoleInjector();
         using var coordinator = new SessionCoordinator(new WavFileRecorder(wav), recognizer, injector);
 
