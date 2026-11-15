@@ -129,7 +129,7 @@ public sealed class NoProxyList
         }
         else if (item.Contains(':')) throw Bad(item); // ブラケットなしの IPv6 は曖昧
 
-        if (host.Length == 0 || host.Contains('/') || host.Contains('*') || host.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)) || host.Contains(".."))
+        if (host.Length == 0 || host.Contains('/') || host.Contains('*') || host.Any(c => !(char.IsLetterOrDigit(c) || c is '.' or '-' or '_' or ':')) || host.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)) || host.Contains(".."))
             throw Bad(item);
         var suffix = host.StartsWith('.');
         if (suffix) host = host[1..];

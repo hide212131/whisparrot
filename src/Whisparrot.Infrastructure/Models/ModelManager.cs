@@ -159,7 +159,7 @@ public sealed class ModelManager
             if (!string.Equals(hash, e.Sha256, StringComparison.Ordinal)) throw new ModelException("SHA-256 が一致しないため破棄しました（ファイルが改ざん・破損している可能性があります）");
 
             try { File.Move(part, PathOf(id), overwrite: true); }
-            catch (IOException ex) { throw new ModelInUseException("モデルファイルが使用中のため置き換えられませんでした: " + ex.Message); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new ModelInUseException("モデルファイルが使用中のため置き換えられませんでした: " + ex.Message); }
             var fi = new FileInfo(PathOf(id));
             lock (_lock) _verified[id] = (fi.Length, fi.LastWriteTimeUtc.Ticks, true);
             progress?.Report(new DownloadProgress(id, e.SizeBytes, e.SizeBytes));

@@ -151,7 +151,7 @@ public static class SettingsJson
     public static byte[] Serialize(AppSettings s)
     {
         using var ms = new MemoryStream();
-        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = true }))
+        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
         {
             w.WriteStartObject();
             w.WriteNumber("schema_version", s.SchemaVersion);

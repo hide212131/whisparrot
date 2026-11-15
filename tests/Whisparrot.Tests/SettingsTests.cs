@@ -185,7 +185,7 @@ public sealed class SettingsTests : IDisposable
         Assert.Throws<SettingsBlockedException>(() => store.Save(AppSettings.Default));
         Assert.Throws<SettingsBlockedException>(() => store.BackupAndReset());
         Assert.Equal(before, Hash(ConfigPath));
-        Assert.Empty(Directory.EnumerateFiles(_dir).Where(f => f != ConfigPath));
+        Assert.DoesNotContain(Directory.EnumerateFiles(_dir), f => f != ConfigPath);
     }
 
     [Fact]
