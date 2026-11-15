@@ -112,7 +112,12 @@ public static class WorkerHost
             rel = native.WhisperDllRelative("cpu") ?? throw new FileNotFoundException("埋め込み native runtime が見つかりません");
             label = "cpu";
         }
-        RuntimeOptions.LibraryPath = Path.Combine(native.Directory, rel.Replace('/', Path.DirectorySeparatorChar));
+        // Whisper.net は LibraryPath の「ディレクトリ」を検索ルートとし、その下の runtimes/<backend>/<rid>/ を探す。
+        // ファイル名部分は使われないので、展開ルートに置いた仮の名前を渡す。
+        RuntimeOptions.LibraryPath = Path.Combine(native.Directory, "whisper.dll");
+        // 子ごとに 1 バックエンドだけを許可する。同一プロセス内の GPU→CPU 次候補は、DLL が壊れているとプロセスごと落ちる
+        // （スパイク §3.1）ので使わず、失敗時は親が CPU の子を別に起動する。
+        RuntimeOptions.RuntimeLibraryOrder = [label == "vulkan" ? RuntimeLibrary.Vulkan : RuntimeLibrary.Cpu];
         LogProvider.AddLogger((_, msg) =>
         {
             if (string.IsNullOrWhiteSpace(msg)) return;

@@ -42,11 +42,11 @@
   -->
   <Target Name="EmbedNativeRuntimes" BeforeTargets="AssignTargetPaths">
     <ItemGroup>
-      <_NativeNone Include="@(None)" Condition="$([System.String]::Copy('%(TargetPath)').Replace('\', '/').StartsWith('runtimes/'))" />
+      <_NativeNone Include="@(None)" Condition="'%(None.TargetPath)' != '' and $([System.String]::Copy('%(None.TargetPath)').Replace('\', '/').StartsWith('runtimes/'))" />
       <_NativeKeep Include="@(_NativeNone)"
-                   Condition="'$(RuntimeIdentifier)' != '' and $([System.Text.RegularExpressions.Regex]::IsMatch($([System.String]::Copy('%(TargetPath)').Replace('\', '/')), '^runtimes/(vulkan/)?$(RuntimeIdentifier)/'))" />
+                   Condition="'$(RuntimeIdentifier)' != '' and $([System.Text.RegularExpressions.Regex]::IsMatch($([System.String]::Copy('%(_NativeNone.TargetPath)').Replace('\', '/')), '^runtimes/(vulkan/)?$(RuntimeIdentifier)/'))" />
       <None Remove="@(_NativeNone)" />
-      <EmbeddedResource Include="@(_NativeKeep)" LogicalName="native/$([System.String]::Copy('%(TargetPath)').Replace('\', '/'))" />
+      <EmbeddedResource Include="@(_NativeKeep)" LogicalName="native/$([System.String]::Copy('%(_NativeKeep.TargetPath)').Replace('\', '/'))" />
     </ItemGroup>
   </Target>
 

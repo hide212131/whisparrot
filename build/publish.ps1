@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-  whisparrot の単一 exe を publish する（Windows 上で実行。.NET SDK 10 と VC++ 再頒布 DLL の置き場が必要）。
+  Publish whisparrot as a single exe (run on Windows; needs .NET SDK 10 and the VC++ redist folder).
 .PARAMETER Arch
   arm64 | x64 | all
 .PARAMETER Backend
-  cpu（既定）| vulkan（x64 のみ）。CUDA は初版の対象外。
+  cpu (default) | vulkan (x64 only). CUDA is out of scope for v1.
 .PARAMETER Out
-  出力先（リポジトリ外を推奨）。既定は out\<rid>\。
+  Output root (outside the repository is recommended). Default: out\<rid>\ under the repo.
 #>
 param(
     [ValidateSet('arm64', 'x64', 'all')][string]$Arch = 'all',
@@ -16,8 +16,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
+# Locate <VS>\VC\Redist\MSVC\<version> (contains x64\ and arm64\ with Microsoft.VC*.CRT).
 function Find-VcRedist {
-    if ($env:VCToolsRedistDir) { return (Split-Path -Parent ($env:VCToolsRedistDir.TrimEnd('\'))) | ForEach-Object { $env:VCToolsRedistDir.TrimEnd('\') } }
+    if ($env:VCToolsRedistDir) { return $env:VCToolsRedistDir.TrimEnd('\') }
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (Test-Path $vswhere) {
         $inst = & $vswhere -latest -products * -property installationPath
@@ -31,15 +32,15 @@ function Find-VcRedist {
 }
 
 $vc = Find-VcRedist
-if (-not $vc) { Write-Warning 'VC++ 再頒布 DLL の置き場が見つかりません。VC++ ランタイムは同梱されません。' }
+if (-not $vc) { Write-Warning 'VC++ redist folder not found: the VC++ runtime will NOT be bundled.' }
 
 $rids = if ($Arch -eq 'all') { @('win-arm64', 'win-x64') } else { @("win-$Arch") }
 foreach ($rid in $rids) {
-    if ($Backend -eq 'vulkan' -and $rid -ne 'win-x64') { Write-Host "skip $rid (vulkan は x64 のみ)"; continue }
+    if ($Backend -eq 'vulkan' -and $rid -ne 'win-x64') { Write-Host "skip $rid (vulkan is x64 only)"; continue }
     $dest = if ($Out) { Join-Path $Out $rid } else { Join-Path $root "out\$rid" }
-    $args = @('publish', (Join-Path $root 'src\Whisparrot.App'), '-c', 'Release', '-r', $rid, "-p:Backend=$Backend", '-o', $dest)
-    if ($vc) { $args += "-p:VcRedistDir=$vc" }
-    dotnet @args
+    $publishArgs = @('publish', (Join-Path $root 'src\Whisparrot.App'), '-c', 'Release', '-r', $rid, "-p:Backend=$Backend", '-o', $dest)
+    if ($vc) { $publishArgs += "-p:VcRedistDir=$vc" }
+    dotnet @publishArgs
     if ($LASTEXITCODE -ne 0) { throw "publish failed: $rid" }
     $exe = Join-Path $dest 'whisparrot.exe'
     $len = (Get-Item $exe).Length

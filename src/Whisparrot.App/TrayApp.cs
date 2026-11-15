@@ -42,7 +42,7 @@ internal static class TrayApp
         var retryItem = menu.Items.Add("入力を再試行", null, (_, _) => coordinator.RetryInsert());
         retryItem.Visible = false;
         menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-        menu.Items.Add("終了", null, (_, _) => app.Dispatcher.BeginInvoke(app.Shutdown));
+        menu.Items.Add("終了", null, (_, _) => app.Dispatcher.BeginInvoke(() => app.Shutdown()));
         tray.ContextMenuStrip = menu;
 
         pill.StopClicked += coordinator.Stop;

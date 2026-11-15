@@ -68,7 +68,7 @@ public sealed class AudioTests
             var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".wav");
             using (var w = new WaveFileWriter(path, new WaveFormat(rate, 16, channels)))
             {
-                w.WriteData(new byte[] { 0, 0, 0, 64, 0, 192 }, 0, 6 * (channels == 1 ? 1 : 1));
+                w.Write(new byte[] { 0, 0, 0, 64, 0, 192 }, 0, 6);
             }
             return path;
         }

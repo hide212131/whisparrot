@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Whisparrot.App/Whisparrot.App.csproj" />
+    <Project Path="src/Whisparrot.Core/Whisparrot.Core.csproj" />
+    <Project Path="src/Whisparrot.Infrastructure/Whisparrot.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Whisparrot.Tests/Whisparrot.Tests.csproj" />
+  </Folder>
+</Solution>

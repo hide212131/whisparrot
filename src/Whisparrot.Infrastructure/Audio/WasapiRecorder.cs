@@ -14,6 +14,7 @@ public sealed class WasapiRecorder : IRecorder
     /// <summary>停止要求後も取り込みを続ける時間。WASAPI のバッファに残る語尾を回収する。</summary>
     internal static readonly TimeSpan TailGrace = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(2);
+    private static readonly Guid IeeeFloatSubFormat = new("00000003-0000-0010-8000-00aa00389b71");
     private static readonly TimeSpan LevelInterval = TimeSpan.FromMilliseconds(50);
 
     private readonly object _gate = new();
@@ -173,7 +174,7 @@ public sealed class WasapiRecorder : IRecorder
         var bytesPerSample = format.BitsPerSample / 8;
         var frameBytes = bytesPerSample * channels;
         var isFloat = format.Encoding == WaveFormatEncoding.IeeeFloat ||
-                      (format is WaveFormatExtensible ext && ext.SubFormat == AudioMediaSubtypes.MEDIASUBTYPE_IEEE_FLOAT);
+                      (format is WaveFormatExtensible ext && ext.SubFormat == IeeeFloatSubFormat);
         for (var pos = 0; pos + frameBytes <= bytes; pos += frameBytes)
         {
             float sum = 0;

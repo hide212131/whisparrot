@@ -10,7 +10,9 @@ namespace Whisparrot.Infrastructure.Audio;
 public sealed class WavFileRecorder(string path) : IRecorder
 {
     public event Action<float>? LevelChanged;
+#pragma warning disable CS0067 // ファイル入力は失敗しない
     public event Action<RecorderError>? Failed;
+#pragma warning restore CS0067
 
     public bool Recording { get; private set; }
 
