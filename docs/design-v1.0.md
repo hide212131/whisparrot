@@ -47,7 +47,7 @@ CPU と Vulkan / CUDA の DLL は exe リソースとして同梱できる構成
 
 | スパイク | 手順と得る証拠 | 終了条件 / 次の判断 |
 | --- | --- | --- |
-| S-01 単一 exe と両アーキ | C# と Rust で同一 whisper.cpp 系列の 10 秒認識、最小トレイ・ピルを作る。x64 / ARM64 の Release exe のバイト数、展開後総量、起動時間、待機 working set、ネイティブ依存一覧を採取 | SDK・.NET・VC++ 再頒布パッケージを追加していない Windows 11 で起動。papa-win はネイティブ ARM64 CPU で認識。モデル除外、CPU+Vulkan と CUDA 追加分を別計測。未計測の MiB 値を選定根拠にしない |
+| S-01 単一 exe と両アーキ | C# と Rust で同一 whisper.cpp 系列の 10 秒認識、最小トレイ・ピルを作る。x64 / ARM64 の Release exe のバイト数、展開後総量、起動時間、待機 working set、ネイティブ依存一覧を採取 | SDK・.NET・VC++ 再頒布パッケージを追加していない Windows 11 で起動。Windows ARM64 VM はネイティブ ARM64 CPU で認識。モデル除外、CPU+Vulkan と CUDA 追加分を別計測。未計測の MiB 値を選定根拠にしない |
 | S-02 GPU と復帰 | Iris Xe で Vulkan 認識、Vulkan loader 不在で CPU、GPU 初期化失敗で CPU、NVIDIA 実機で CUDA→Vulkan→CPU の利用可能な経路を試す。ARM64 は GPU の有無を記録 | GPU DLL の依存欠落で親アプリが起動不能にならず、失敗後に同じ PCM を CPU で認識。実行方式と GPU 名が実測に一致 |
 | S-03 パッケージ可否 | Vulkan / CUDA の再配布対象、ライセンス、同梱方法、ロードパス、追加 runtime の exe 増分を確認 | 配布時は単一 exe、更新は本体だけ、モデル別置きを維持。CUDA を仕様から黙って落とさない。サイズ過大・同梱不能なら D-2 を再検討 |
 
@@ -191,7 +191,7 @@ small が目安を満たせば small を既定とする。medium は同じ速度
 
 Win キーを含む組合せは OS 予約であり、`RegisterHotKey` 成功だけで今後の Windows build を含む動作を保証できない。[RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)
 
-1. papa-win と Iris Xe x64 実機の Windows build、キーボード配列、IME、VM のキー転送設定を記録する。papa-win ではまず Win キーがゲストへ届くことを確認し、ホストによる横取りと Windows 側の予約を区別する。
+1. Windows ARM64 VM と Iris Xe x64 実機の Windows build、キーボード配列、IME、VM のキー転送設定を記録する。Windows ARM64 VM ではまず Win キーがゲストへ届くことを確認し、ホストによる横取りと Windows 側の予約を区別する。
 2. メッセージウィンドウで `RegisterHotKey(hwnd, id, MOD_WIN | MOD_NOREPEAT, 0x4A)` を実行し、戻り値と `GetLastError` を記録する。常駐アプリの競合あり / なしを分ける。
 3. メモ帳、ブラウザの textarea、主要チャット欄、デスクトップで各 20 回トグルする。押しっぱなしで一回だけ発火すること、開始 / 停止の一致、フォーカス非移動を確認する。
 4. Windows のヒント通知がある状態 / ない状態、IME ON/OFF、ログイン直後、サスペンド復帰後も試す。OS の通知フォーカスが同時に動いたら不合格。単にアプリのイベントが来たことを「奪えた」としない。
@@ -305,7 +305,7 @@ hane の参照 checkout `68c438aea3ce39e12b25aa4ad3e2f5e16294190d` で、`crates
 
 公式 Cookbook にローカルデスクトップの参考例があるが、そこにある複数アカウント UI、別の整形レシピなどは機能として追加しない。[公式実装例](https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt)
 
-S-04 の完了条件は、papa-win / x64 でログイン→整文→期限切れ更新→ログアウトが通り、DPAPI とプロキシ経路が守られ、プラン権限未許可・失効時に原文へ戻ること。OS ブラウザーによる認証通信はアプリの `HttpClient` では制御できないため、§9 の留保も本人へ伝える。
+S-04 の完了条件は、Windows ARM64 VM / x64 でログイン→整文→期限切れ更新→ログアウトが通り、DPAPI とプロキシ経路が守られ、プラン権限未許可・失効時に原文へ戻ること。OS ブラウザーによる認証通信はアプリの `HttpClient` では制御できないため、§9 の留保も本人へ伝える。
 
 **推奨しない (b)** は、非公開 `chatgpt.com/backend-api`、ブラウザー cookie 抽出、既存 Codex の token 無断流用を前提とするもの。公式の直接方式が当該アカウント / 配布条件で利用できないなら、この方式で穴埋めしない。
 
@@ -538,7 +538,7 @@ checksum が exe と同じ配布経路にあるため、これは破損や誤資
 
 HTTP の結合試験は fixture の loopback サーバーと記録用 CONNECT proxy を使う。整文・更新・モデルの全クライアントが同じ経路を通ることを記録し、外部サービスの偶然の成功だけに依存しない。ライブ整文の確認には専用の短いテスト文だけを使う。token / キーを CI ログへ出さない。
 
-### 12.2 papa-win（Windows 11 ARM64 VM）
+### 12.2 Windows 11 ARM64 VM
 
 - ネイティブ ARM64 exe を、開発用 .NET SDK や追加 VC++ runtime を前提にしない状態で起動する。PE / process arch を記録し、x64 エミュレーション動作と区別する。
 - トレイ、二重起動、Explorer 再起動、設定、DPAPI、Run キーの ON/OFF、schema エラーの非破壊性、書込み不能フォルダを確認する。
@@ -553,7 +553,7 @@ HTTP の結合試験は fixture の loopback サーバーと記録用 CONNECT pr
 
 ### 12.3 x64 実機
 
-papa-win の機能試験を x64 exe でも行った上で、以下を追加する。
+Windows ARM64 VM の機能試験を x64 exe でも行った上で、以下を追加する。
 
 - Iris Xe、RAM 16 GB、Windows 11 の基準機で D-3 を実施する。実際の Vulkan 使用、ドライバー不一致、loader 不在、GPU 失敗後の CPU 復帰を確認する。
 - x64 の CPU SIMD 要件が強すぎて起動不能にならないことを配布対象 CPU で確認し、必要なら同梱 CPU runtime を選び直す。別 OS のビルド成功を Windows 配布の根拠にしない。
@@ -568,7 +568,7 @@ papa-win の機能試験を x64 exe でも行った上で、以下を追加す�
 | --- | --- | --- |
 | 既定キーで開始・停止、日本語が各アプリへ入る | §5、§6、§10、両機の入力試験 | 確定キーと Windows build、メモ帳・ブラウザー・主要チャット欄の試験記録。各 20 回で開始停止の取り違え / 二重投入 0、元クリップボード復元 |
 | 互換整文で句読点、接続停止でも原文 | §7.1 / §7.2、Coordinator / HTTP 試験 | 整文 ON の意味保持・句読点、停止 / timeout / 空応答時に認識生テキストが一度だけ投入される記録 |
-| x64 / ARM64 起動、papa-win 一連動作 | §2 の配布検証、§12.2 / §12.3 | 配布 exe の hash / PE arch、クリーン起動、ARM64 のマイク→認識→整文任意→投入。VM の GPU 性能を含めない |
+| x64 / ARM64 起動、Windows ARM64 VM 一連動作 | §2 の配布検証、§12.2 / §12.3 | 配布 exe の hash / PE arch、クリーン起動、ARM64 のマイク→認識→整文任意→投入。VM の GPU 性能を含めない |
 | 本体更新で設定・モデル保持 | §8、§11、実 exe の更新試験 | 更新前後の config / models の hash と利用確認、成功時の本体 version 変更、失敗時の旧 version 復元 |
 | 環境変数 proxy 経由の整文と更新確認 | §9、記録用 proxy の結合試験 | それぞれの接続先・CONNECT 記録。bypass と none を含む経路確認。モデル取得も仕様 §6 の追加確認として実施 |
 
@@ -585,7 +585,7 @@ papa-win の機能試験を x64 exe でも行った上で、以下を追加す�
 | 3 / T03 | Core の状態・インターフェース、STA 起動、mutex、最小トレイ | T01 | 起動 / 終了 / 二重起動、イベント直列化、fake による正常・取消遷移が動く |
 | 4 / T04 | ホットキー登録と `WasapiRecorder` | T02、T03 | 同じキーで開始停止、16 kHz mono、末尾回収、レベル通知、取消・マイクエラーでデバイス解放 |
 | 5 / T05 | 認識ワーカー、IPC、CPU 認識 | T01、T03 | 手動配置した検証済み small を読み、日本語認識。遅延完了を隔離し、取消で孤児を残さない |
-| 6 / T06 | TextInjector の基本、最小ピルの停止・取消、Coordinator 接続 | T04、T05 | **M1**: papa-win ARM64 と x64 で整文 OFF の一連動作が通る。メモ帳へ入力、元のテキスト clipboard 復元、取消非投入、ピル非フォーカスを確認 |
+| 6 / T06 | TextInjector の基本、最小ピルの停止・取消、Coordinator 接続 | T04、T05 | **M1**: Windows ARM64 VM ARM64 と x64 で整文 OFF の一連動作が通る。メモ帳へ入力、元のテキスト clipboard 復元、取消非投入、ピル非フォーカスを確認 |
 | 7 / T07 | `JsonSettingsStore` / SecretProtector / 自動起動 | T03 | §8 の全項目、未来 schema 非破壊拒否、atomic save、CurrentUser DPAPI、Run キー ON/OFF が検証済み |
 | 8 / T08 | NetworkContext と proxy fixture | T07 | 3 モード、NO_PROXY、認証、TLS / redirect の規則が単体・結合で成立。通信箇所が共通生成口を使う |
 | 9 / T09 | ModelManager と固定 catalog | T05、T08 | 4 モデルの取得・hash・途中失敗・切替、既存モデル保持。catalog の revision / hash が実ファイルに一致 |
@@ -610,7 +610,7 @@ M1 ではモデルを検証用に手動配置してよいが、初版出荷で�
 | D-1 | 公式直接 OAuth の (b) を条件付き推奨。(a) は代替、(c) は範囲判断が必要 | S-04 の資格・実動作・規約確認と三案比較を司令塔経由で本人が選択 | T13 着手前、初版の完了判定前 |
 | D-2 | C# / .NET 10 + WPF + Whisper.net を暫定推奨 | S-01～03 の単一 exe、両 arch、GPU / CPU 復帰、実サイズと保守負担で設計判断を確定 | T03 本実装前 |
 | D-3 | small 暫定。medium との差は実測で決める | Iris Xe x64 の 10 / 30 秒音声、速度・精度・メモリの実測。司令塔確認 | 初期既定値を出荷へ固定する前 |
-| D-4 | Win+J を最初に検証。不合格なら Ctrl+Win+J、次に Ctrl+Alt+J | papa-win と x64 のキー発火・OS 競合の試験表 | M1 の既定キー確定前 |
+| D-4 | Win+J を最初に検証。不合格なら Ctrl+Win+J、次に Ctrl+Alt+J | Windows ARM64 VM と x64 のキー発火・OS 競合の試験表 | M1 の既定キー確定前 |
 | D-5 | **初版の正式サポートは Windows 11 のみを推奨** | Windows 10 検証機・必要な利用者・runtime / driver の適合が未確認。VM / 実機試験を増やす負担と必要性を本人が判断 | T17 の対象環境確定前 |
 
 D-5 は Windows 10 で動かないと断言する判断ではない。API の存在だけでは WPF、音声、GPU、更新までの動作保証にならないため、必要が確認されるまでサポートを広げない。対象に追加する場合は build / arch / ドライバー範囲を特定し、§12 の同じ機能・更新試験を追加する。専用 UI や互換機能は無断で足さない。
