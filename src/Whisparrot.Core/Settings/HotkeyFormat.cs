@@ -30,6 +30,7 @@ public static class HotkeyFormat
     public static bool TryParseKey(string name, out uint vk)
     {
         vk = 0;
+        if (name.Length == 0) return false;
         if (name.Length == 1)
         {
             var c = char.ToUpperInvariant(name[0]);
