@@ -1,4 +1,5 @@
 //! S-01 Rust 比較用の最小コンソール認識。
+//! 注意: Windows ARM64 VM では whisper-rs-sys のビルドが通らず未コンパイル（s01-report.md 参照）。API 整合は未検証。
 //! usage: spike-s01-rust <model.bin> <audio.wav(16kHz mono PCM16)> [lang]
 use std::time::Instant;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
