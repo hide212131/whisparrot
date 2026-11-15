@@ -36,6 +36,15 @@ public sealed class NativeRuntimeTests : IDisposable
     }
 
     [Fact]
+    public void Extract_for_a_backend_touches_only_that_backend_and_vcrt()
+    {
+        var rt = new NativeRuntime(new MemorySource(Files()), _root, "1.0.0", "win-x64");
+        Assert.Equal((3, 0), rt.Extract("cpu"));       // cpu 2 ファイル + vcrt 1
+        Assert.False(File.Exists(Path.Combine(rt.Directory, "runtimes", "vulkan", "win-x64", "whisper.dll")));
+        Assert.Equal((1, 1), rt.Extract("vulkan"));    // vulkan 1 を新規、vcrt は再利用
+    }
+
+    [Fact]
     public void A_tampered_file_is_replaced_by_the_embedded_original()
     {
         var rt = new NativeRuntime(new MemorySource(Files()), _root, "1.0.0", "win-x64");

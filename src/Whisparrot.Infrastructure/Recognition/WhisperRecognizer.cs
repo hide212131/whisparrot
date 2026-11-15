@@ -44,6 +44,9 @@ public sealed class WhisperRecognizer : IRecognizer
     /// <summary>直近の認識子が報告した実行方式（未実行なら null）。</summary>
     public string? LastBackend { get; private set; }
 
+    /// <summary>直近の認識子が報告した診断（ロードしたライブラリ名と whisper.cpp ログの末尾）。</summary>
+    public string? LastWorkerDetail { get; private set; }
+
     public string? CheckReady()
     {
         var path = _options.ModelPath;
@@ -68,6 +71,7 @@ public sealed class WhisperRecognizer : IRecognizer
                 {
                     var result = await RunOnceAsync(backend, request, ct).ConfigureAwait(false);
                     LastBackend = result.Backend;
+                    LastWorkerDetail = _worker is { } w ? $"library={w.Ready.Library} log={w.Ready.Detail}" : null;
                     return result;
                 }
                 catch (OperationCanceledException)

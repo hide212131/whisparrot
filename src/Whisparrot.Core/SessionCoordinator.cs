@@ -44,7 +44,6 @@ public sealed class SessionCoordinator : IDisposable
     private readonly ITextInjector _injector;
     private readonly Channel<Evt> _events = Channel.CreateUnbounded<Evt>(new UnboundedChannelOptions { SingleReader = true });
     private readonly Task _loop;
-    private readonly CancellationTokenSource _lifetime = new();
 
     private SessionState _state = SessionState.Idle;
     private long _sessionId;
@@ -339,6 +338,5 @@ public sealed class SessionCoordinator : IDisposable
         _sessionCts?.Cancel();
         _sessionCts?.Dispose();
         SafeCancelRecorder();
-        _lifetime.Dispose();
     }
 }

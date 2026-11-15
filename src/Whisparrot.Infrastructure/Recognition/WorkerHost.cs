@@ -103,8 +103,6 @@ public static class WorkerHost
     /// </summary>
     private static (string BackendLabel, string Library) ConfigureNative(NativeRuntime native, string backend, List<string> logs)
     {
-        native.Extract();
-        native.PreloadVcRuntime();
         var rel = native.WhisperDllRelative(backend);
         var label = backend;
         if (rel is null)
@@ -112,6 +110,8 @@ public static class WorkerHost
             rel = native.WhisperDllRelative("cpu") ?? throw new FileNotFoundException("埋め込み native runtime が見つかりません");
             label = "cpu";
         }
+        native.Extract(label); // 要求バックエンドに必要な分だけ（壊れた GPU DLL が CPU の子を巻き込まない）
+        native.PreloadVcRuntime();
         // Whisper.net は LibraryPath の「ディレクトリ」を検索ルートとし、その下の runtimes/<backend>/<rid>/ を探す。
         // ファイル名部分は使われないので、展開ルートに置いた仮の名前を渡す。
         RuntimeOptions.LibraryPath = Path.Combine(native.Directory, "whisper.dll");

@@ -69,18 +69,29 @@ public sealed class NativeRuntime
         return _source.Names.Contains(ResourcePrefix + want) ? want : null;
     }
 
-    /// <summary>全リソースを展開（変更が無ければ何もしない）。展開した/済みのファイル数を返す。</summary>
-    public (int Written, int Reused) Extract()
+    /// <summary>
+    /// 指定バックエンドに必要なリソース（そのバックエンドの runtimes と vcrt）だけを展開する。
+    /// 変更が無ければ何もしない。展開した/済みのファイル数を返す。null なら全リソース。
+    /// </summary>
+    public (int Written, int Reused) Extract(string? backend = null)
     {
         System.IO.Directory.CreateDirectory(_root);
         int written = 0, reused = 0;
         foreach (var name in _source.Names)
         {
             var rel = name[ResourcePrefix.Length..];
+            if (backend is not null && !IsNeeded(rel, backend)) continue;
             var target = Path.Combine(_root, rel.Replace('/', Path.DirectorySeparatorChar));
             if (ExtractOne(name, target)) written++; else reused++;
         }
         return (written, reused);
+    }
+
+    private static bool IsNeeded(string rel, string backend)
+    {
+        if (rel.StartsWith(VcrtDir, StringComparison.Ordinal)) return true;
+        var isVulkan = rel.StartsWith("runtimes/vulkan/", StringComparison.Ordinal);
+        return backend == "vulkan" ? isVulkan : !isVulkan;
     }
 
     private bool ExtractOne(string resourceName, string target)

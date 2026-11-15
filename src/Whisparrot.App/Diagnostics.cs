@@ -29,6 +29,76 @@ internal static class Diagnostics
         return 0;
     }
 
+    /// <summary>--record-probe [ms] [--cancel]: 実マイクを短時間録音し、サンプル数・レベル通知回数を表示する。</summary>
+    public static int RecordProbe(string[] args)
+    {
+        var ms = args.Length > 1 && int.TryParse(args[1], out var v) ? v : 1500;
+        var cancel = args.Contains("--cancel");
+        using var rec = new WasapiRecorder();
+        var levels = 0;
+        float peak = 0;
+        rec.LevelChanged += l => { levels++; peak = Math.Max(peak, l); };
+        rec.Failed += e => Console.WriteLine($"recorder_failed={e.Kind} {e.Message}");
+        try
+        {
+            rec.Start();
+        }
+        catch (RecorderException ex)
+        {
+            Console.WriteLine($"start_failed kind={ex.Kind} message={ex.Message} inner={ex.InnerException?.GetType().Name}: {ex.InnerException?.Message}");
+            return 2;
+        }
+        Console.WriteLine("recording");
+        Thread.Sleep(ms);
+        if (cancel)
+        {
+            rec.Cancel();
+            Console.WriteLine("cancelled (device released)");
+            return 0;
+        }
+        var sw = Stopwatch.StartNew();
+        var pcm = rec.StopAsync().GetAwaiter().GetResult();
+        Console.WriteLine($"samples={pcm.Samples.Length} seconds={pcm.Duration.TotalSeconds:F2} stop_ms={sw.ElapsedMilliseconds} level_events={levels} peak_level={peak:F3}");
+        return 0;
+    }
+
+    /// <summary>--clipboard-probe: クリップボードの退避/復元の往復を、複数形式で確認する（貼り付けは送らない）。</summary>
+    public static int ClipboardProbe()
+    {
+        var r = Whisparrot.App.Windows.TextInjector.ClipboardRoundTripProbe();
+        Console.WriteLine(r);
+        return r.Contains("all_original_formats_restored=True") && r.Contains("other_app_copy_preserved=True") ? 0 : 1;
+    }
+
+    /// <summary>--pill-probe: 非対話でもできる範囲でピルの生成・表示・スタイルを確認する（描画の目視はできない）。</summary>
+    public static int PillProbe()
+    {
+        var app = new System.Windows.Application { ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown };
+        var exit = 1;
+        app.Startup += (_, _) =>
+        {
+            var pill = new Whisparrot.App.Views.PillWindow();
+            var fg = Whisparrot.App.Windows.NativeMethods.GetForegroundWindow();
+            foreach (var st in new[] { SessionState.Recording, SessionState.Recognizing, SessionState.Inserting, SessionState.Failed })
+            {
+                pill.ShowState(st);
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(pill).Handle;
+                var ex = Whisparrot.App.Windows.NativeMethods.GetWindowLongPtr(hwnd, Whisparrot.App.Windows.NativeMethods.GWL_EXSTYLE).ToInt64();
+                var ma = Whisparrot.App.Windows.NativeMethods.SendMessage(hwnd, Whisparrot.App.Windows.NativeMethods.WM_MOUSEACTIVATE, IntPtr.Zero, IntPtr.Zero).ToInt64();
+                Whisparrot.App.Windows.NativeMethods.GetWindowRect(hwnd, out var rc);
+                Console.WriteLine($"{st}: visible={pill.IsVisible} noactivate={(ex & Whisparrot.App.Windows.NativeMethods.WS_EX_NOACTIVATE) != 0} toolwindow={(ex & Whisparrot.App.Windows.NativeMethods.WS_EX_TOOLWINDOW) != 0} wm_mouseactivate={ma} (3=MA_NOACTIVATE) rect=({rc.Left},{rc.Top})-({rc.Right},{rc.Bottom}) active={pill.IsActive}");
+            }
+            var fgAfter = Whisparrot.App.Windows.NativeMethods.GetForegroundWindow();
+            Console.WriteLine($"foreground_unchanged={fg == fgAfter}");
+            pill.ShowState(SessionState.Idle);
+            Console.WriteLine($"hidden_when_idle={!pill.IsVisible}");
+            exit = 0;
+            app.Shutdown();
+        };
+        app.Run();
+        return exit;
+    }
+
     public static int PipelineFile(string[] args, INativeResourceSource resources)
     {
         string? Opt(string n) { var i = Array.IndexOf(args, n); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
@@ -81,6 +151,7 @@ internal static class Diagnostics
             if (!done.Wait(TimeSpan.FromMinutes(5))) { Console.WriteLine("timeout"); return 1; }
             Console.WriteLine($"run{i + 1}_total_ms={sw.ElapsedMilliseconds}");
         }
+        Console.WriteLine($"worker_detail={recognizer.LastWorkerDetail}");
         foreach (var t in injector.Injected) Console.WriteLine($"injected_text={t}");
         if (cancelAfter < 0 && injector.Injected.Count != repeat) exit = 1;
         return exit;

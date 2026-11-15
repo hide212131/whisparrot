@@ -84,6 +84,79 @@ internal sealed class TextInjector : ITextInjector
         return sent ? new InjectResult(InjectOutcome.Success) : Fail("キー入力を送れませんでした");
     }
 
+    /// <summary>
+    /// 診断用: 複数形式（Unicode テキスト / HTML / HDROP）を載せたクリップボードに対し、
+    /// 「退避 → 投入テキストを設定 → 復元」を行い、全形式が元どおり戻るか、および別アプリがコピーした場合は復元しないことを確認する。
+    /// 前景ウィンドウ確認と Ctrl+V の送信は行わない。
+    /// </summary>
+    internal static string ClipboardRoundTripProbe()
+    {
+        string result = "no result";
+        var thread = new Thread(() => result = RoundTrip()) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        return result;
+
+        static string RoundTrip()
+        {
+            var html = RegisterClipboardFormatW("HTML Format");
+            var original = new List<(uint Format, byte[] Data)>
+            {
+                (CF_UNICODETEXT, System.Text.Encoding.Unicode.GetBytes("元のテキスト\0")),
+                (html, System.Text.Encoding.UTF8.GetBytes("Version:0.9\r\n<html><body>元</body></html>\0")),
+                (15 /* CF_HDROP */, new byte[] { 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 }),
+            };
+            if (!OpenClipboardRetry()) return "FAIL: cannot open clipboard (non-interactive window station?)";
+            EmptyClipboard();
+            foreach (var (f, d) in original) SetGlobal(f, d);
+            CloseClipboard();
+
+            // 1) 通常: 退避 → 設定 → （sequence 不変）→ 復元
+            OpenClipboardRetry();
+            TrySnapshot(out var snap, out _);
+            EmptyClipboard();
+            SetText("投入テキスト");
+            CloseClipboard();
+            var seq = GetClipboardSequenceNumber();
+            OpenClipboardRetry();
+            var unchanged = GetClipboardSequenceNumber() == seq;
+            if (unchanged) { EmptyClipboard(); Restore(snap); }
+            CloseClipboard();
+            var restored = ReadAll();
+            var same = original.All(o => restored.Any(r => r.Format == o.Format && r.Data.AsSpan().SequenceEqual(o.Data)));
+
+            // 2) 別アプリがコピーした場合: sequence が変わるので復元しない
+            OpenClipboardRetry();
+            TrySnapshot(out var snap2, out _);
+            EmptyClipboard();
+            SetText("投入テキスト");
+            CloseClipboard();
+            var seq2 = GetClipboardSequenceNumber();
+            OpenClipboardRetry(); EmptyClipboard(); SetGlobal(CF_UNICODETEXT, System.Text.Encoding.Unicode.GetBytes("他アプリのコピー\0")); CloseClipboard();
+            OpenClipboardRetry();
+            var changed = GetClipboardSequenceNumber() != seq2;
+            if (!changed) { EmptyClipboard(); Restore(snap2); }
+            CloseClipboard();
+            var after = ReadAll();
+            var kept = after.Any(r => r.Format == CF_UNICODETEXT && System.Text.Encoding.Unicode.GetString(r.Data).StartsWith("他アプリのコピー"));
+
+            return $"snapshot_formats={snap.Count} all_original_formats_restored={same} other_app_copy_preserved={kept}";
+        }
+
+        static List<(uint Format, byte[] Data)> ReadAll()
+        {
+            var list = new List<(uint, byte[])>();
+            OpenClipboardRetry();
+            TrySnapshot(out list, out _);
+            CloseClipboard();
+            return list;
+        }
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint RegisterClipboardFormatW(string name);
+
     private static InjectResult Fail(string message) => new(InjectOutcome.Failed, message);
 
     private static bool ForegroundIsExternal()
