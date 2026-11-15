@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>whisparrot</AssemblyName>
+    <RootNamespace>Whisparrot.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishTrimmed>false</PublishTrimmed>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <!-- .NET / WPF 自身の native はホストが展開する。Whisper の native は下で exe へ埋め込み、自前で展開する（設計 §2.2）。 -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- 本人決定: 圧縮込みで約 70 MiB の exe を受け入れる。 -->
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- -p:Backend=cpu（既定）| vulkan（x64 のみ。Vulkan runtime を追加で埋め込む）。CUDA は初版の対象外。 -->
+    <Backend Condition="'$(Backend)' == ''">cpu</Backend>
+    <!-- VC++ 再頒布 DLL の置き場（<MSVC バージョン>\ を含むルート）。build/publish.ps1 が vswhere で探して渡す。 -->
+    <VcRedistArch Condition="'$(RuntimeIdentifier)' == 'win-arm64'">arm64</VcRedistArch>
+    <VcRedistArch Condition="'$(RuntimeIdentifier)' == 'win-x64'">x64</VcRedistArch>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF と WinForms の型名衝突を避ける -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Whisparrot.Core\Whisparrot.Core.csproj" />
+    <ProjectReference Include="..\Whisparrot.Infrastructure\Whisparrot.Infrastructure.csproj" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" Condition="'$(Backend)' == 'vulkan'" />
+  </ItemGroup>
+
+  <!--
+    Whisper.net.Runtime* の targets は native DLL を None 項目として全 OS / 全アーキ分出力へ入れる。
+    すべて出力から外し、対象 RID（と Vulkan）の Windows 用だけを exe のリソースとして埋め込む
+    （実行時は NativeRuntime が %LOCALAPPDATA%\whisparrot\runtime\ へハッシュ確認付きで展開する）。
+  -->
+  <Target Name="EmbedNativeRuntimes" BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <_NativeNone Include="@(None)" Condition="$([System.String]::Copy('%(TargetPath)').Replace('\', '/').StartsWith('runtimes/'))" />
+      <_NativeKeep Include="@(_NativeNone)"
+                   Condition="'$(RuntimeIdentifier)' != '' and $([System.Text.RegularExpressions.Regex]::IsMatch($([System.String]::Copy('%(TargetPath)').Replace('\', '/')), '^runtimes/(vulkan/)?$(RuntimeIdentifier)/'))" />
+      <None Remove="@(_NativeNone)" />
+      <EmbeddedResource Include="@(_NativeKeep)" LogicalName="native/$([System.String]::Copy('%(TargetPath)').Replace('\', '/'))" />
+    </ItemGroup>
+  </Target>
+
+  <!-- VC++ 再頒布 DLL（Whisper の native が依存）をアプリローカルで同梱する。 -->
+  <Target Name="EmbedVcRuntime" BeforeTargets="AssignTargetPaths" Condition="'$(VcRedistDir)' != '' and '$(VcRedistArch)' != ''">
+    <ItemGroup>
+      <_Vcrt Include="$(VcRedistDir)\$(VcRedistArch)\Microsoft.VC*.CRT\msvcp140.dll" />
+      <_Vcrt Include="$(VcRedistDir)\$(VcRedistArch)\Microsoft.VC*.CRT\vcruntime140.dll" />
+      <_Vcrt Include="$(VcRedistDir)\$(VcRedistArch)\Microsoft.VC*.CRT\vcruntime140_1.dll" />
+      <_Vcrt Include="$(VcRedistDir)\$(VcRedistArch)\Microsoft.VC*.OpenMP\vcomp140.dll" />
+      <EmbeddedResource Include="@(_Vcrt)" LogicalName="native/vcrt/%(Filename)%(Extension)" />
+    </ItemGroup>
+    <Message Importance="high" Text="VC++ runtime embedded: @(_Vcrt->'%(Filename)%(Extension)', ', ')" />
+  </Target>
+  <Target Name="WarnNoVcRuntime" BeforeTargets="AssignTargetPaths" Condition="'$(VcRedistDir)' == ''">
+    <Warning Text="VcRedistDir が未指定のため VC++ ランタイムを同梱しません（利用者の PC に VC++ 再頒布パッケージが必要）。build/publish.ps1 を使うと自動で渡されます。" />
+  </Target>
+
+</Project>

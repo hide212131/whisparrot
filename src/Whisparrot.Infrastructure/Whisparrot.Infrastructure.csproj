@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>Whisparrot.Infrastructure</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Whisparrot.Core\Whisparrot.Core.csproj" />
+    <!-- マネージド部分のみ。native の Runtime パッケージは App が参照し、exe へ埋め込む。 -->
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Whisparrot.Tests" />
+  </ItemGroup>
+</Project>
