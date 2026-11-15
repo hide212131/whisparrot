@@ -13,7 +13,7 @@ namespace Whisparrot.App;
 ///   --pipeline-file &lt;wav&gt; [--model p] [--cancel-after-ms N] [--repeat N] [--backend cpu|auto]
 ///       WAV を「録音済み音声」として Coordinator → 子プロセス認識 → 投入（出力のみの fake）まで通す
 /// </summary>
-internal static class Diagnostics
+internal static partial class Diagnostics
 {
     public static int NativeInfo(INativeResourceSource resources)
     {

@@ -8,6 +8,10 @@
     <!-- マネージド部分のみ。native の Runtime パッケージは App が参照し、exe へ埋め込む。 -->
     <PackageReference Include="Whisper.net" Version="1.9.1" />
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Models\model-catalog.json" LogicalName="model-catalog.json" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Whisparrot.Tests" />

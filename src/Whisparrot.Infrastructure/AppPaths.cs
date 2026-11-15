@@ -9,6 +9,9 @@ public static class AppPaths
     public static string AppDirectory { get; } =
         Path.GetDirectoryName(Environment.ProcessPath) ?? throw new InvalidOperationException("ProcessPath が取得できません");
 
+    /// <summary>設計 §8.1: exe の隣の config.json。</summary>
+    public static string ConfigPath => Path.Combine(AppDirectory, "config.json");
+
     public static string ModelsDirectory => Path.Combine(AppDirectory, "models");
 
     /// <summary>M1 の暫定既定。モデル選択の設定化は T07 / T09。</summary>

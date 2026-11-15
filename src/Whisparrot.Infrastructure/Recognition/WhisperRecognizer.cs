@@ -14,7 +14,12 @@ public sealed record WhisperRecognizerOptions(
     /// <summary>モデルの想定サイズ。T09 までは存在とサイズの確認だけ（ハッシュ照合は T09）。0 なら確認しない。</summary>
     long ExpectedModelBytes = 0,
     TimeSpan? StartupTimeout = null,
-    TimeSpan? RecognizeTimeout = null);
+    TimeSpan? RecognizeTimeout = null,
+    /// <summary>設定のモデル選択に追従する解決口（T09）。指定時は <see cref="ModelPath"/> / <see cref="ExpectedModelBytes"/> より優先。</summary>
+    Func<ModelTarget>? ModelResolver = null);
+
+/// <summary>認識に使うモデル。<paramref name="NotReadyReason"/> が null でなければ録音を始めない（検証済みのファイルだけが認識に渡る）。</summary>
+public sealed record ModelTarget(string Path, string? NotReadyReason);
 
 /// <summary>
 /// 親側の認識。認識は必ず子プロセス（同じ exe の worker）で行い、PCM は親が保持する。
@@ -47,8 +52,22 @@ public sealed class WhisperRecognizer : IRecognizer
     /// <summary>直近の認識子が報告した診断（ロードしたライブラリ名と whisper.cpp ログの末尾）。</summary>
     public string? LastWorkerDetail { get; private set; }
 
+    /// <summary>子が読み込んでいるモデルのパス（なければ null）。取得の置き換え可否の判定に使う。</summary>
+    public string? LoadedModelPath => _worker?.ModelPath;
+
+    /// <summary>
+    /// 待機中の子を終了する（モデル切替時にメモリを解放する）。認識中なら何もしない
+    /// （次の認識で、モデルが変わっていれば子を作り直す）。
+    /// </summary>
+    public void ReleaseIdleWorker()
+    {
+        if (!_gate.Wait(0)) return;
+        try { KillWorker(); } finally { _gate.Release(); }
+    }
+
     public string? CheckReady()
     {
+        if (_options.ModelResolver is { } resolve) return resolve().NotReadyReason;
         var path = _options.ModelPath;
         if (!File.Exists(path)) return $"モデルがありません: {path}";
         var len = new FileInfo(path).Length;
@@ -63,13 +82,16 @@ public sealed class WhisperRecognizer : IRecognizer
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            var modelPath = _options.ModelResolver?.Invoke() is { } target
+                ? (target.NotReadyReason is null ? target.Path : throw new RecognitionException(target.NotReadyReason))
+                : _options.ModelPath;
             var plan = BuildPlan();
             for (var i = 0; i < plan.Count; i++)
             {
                 var backend = plan[i];
                 try
                 {
-                    var result = await RunOnceAsync(backend, request, ct).ConfigureAwait(false);
+                    var result = await RunOnceAsync(backend, modelPath, request, ct).ConfigureAwait(false);
                     LastBackend = result.Backend;
                     LastWorkerDetail = _worker is { } w ? $"library={w.Ready.Library} log={w.Ready.Detail}" : null;
                     return result;
@@ -110,13 +132,13 @@ public sealed class WhisperRecognizer : IRecognizer
         return plan;
     }
 
-    private async Task<RecognitionResult> RunOnceAsync(string backend, RecognitionRequest request, CancellationToken ct)
+    private async Task<RecognitionResult> RunOnceAsync(string backend, string modelPath, RecognitionRequest request, CancellationToken ct)
     {
         var worker = _worker;
-        if (worker is null || worker.Backend != backend || worker.Process.HasExited)
+        if (worker is null || worker.Backend != backend || worker.ModelPath != modelPath || worker.Process.HasExited)
         {
             KillWorker();
-            worker = _worker = await StartWorkerAsync(backend, ct).ConfigureAwait(false);
+            worker = _worker = await StartWorkerAsync(backend, modelPath, ct).ConfigureAwait(false);
         }
 
         var threads = Math.Max(1, Math.Min(8, Environment.ProcessorCount - 1));
@@ -148,7 +170,7 @@ public sealed class WhisperRecognizer : IRecognizer
 
     private static RecognitionResult ToResult(ResultInfo r) => new(r.Text, r.Backend);
 
-    private async Task<Worker> StartWorkerAsync(string backend, CancellationToken ct)
+    private async Task<Worker> StartWorkerAsync(string backend, string modelPath, CancellationToken ct)
     {
         var pipeName = "whisparrot-" + Guid.NewGuid().ToString("N");
         var nonceBytes = RandomNumberGenerator.GetBytes(16);
@@ -159,7 +181,7 @@ public sealed class WhisperRecognizer : IRecognizer
         IWorkerProcess? process = null;
         try
         {
-            process = _launcher.Launch(new WorkerStartInfo(backend, pipeName, Convert.ToHexString(nonceBytes), _options.ModelPath));
+            process = _launcher.Launch(new WorkerStartInfo(backend, pipeName, Convert.ToHexString(nonceBytes), modelPath));
             var startup = _options.StartupTimeout ?? TimeSpan.FromSeconds(120);
             using var timeout = new CancellationTokenSource(startup);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
@@ -177,7 +199,7 @@ public sealed class WhisperRecognizer : IRecognizer
                 if (rtype != FrameType.Ready) throw new InvalidDataException($"想定外のフレーム: {rtype}");
                 var ready = WorkerProtocol.ParseJson<ReadyInfo>(rbody);
                 exitWatch.Cancel();
-                return new Worker(backend, process, pipe, ready);
+                return new Worker(backend, modelPath, process, pipe, ready);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
@@ -215,9 +237,10 @@ public sealed class WhisperRecognizer : IRecognizer
         KillWorker();
     }
 
-    private sealed class Worker(string backend, IWorkerProcess process, NamedPipeServerStream pipe, ReadyInfo ready) : IDisposable
+    private sealed class Worker(string backend, string modelPath, IWorkerProcess process, NamedPipeServerStream pipe, ReadyInfo ready) : IDisposable
     {
         public string Backend { get; } = backend;
+        public string ModelPath { get; } = modelPath;
         public IWorkerProcess Process { get; } = process;
         public NamedPipeServerStream Pipe { get; } = pipe;
         public ReadyInfo Ready { get; } = ready;

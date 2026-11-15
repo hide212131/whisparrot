@@ -9,7 +9,7 @@ namespace Whisparrot.Infrastructure.Audio;
 /// WASAPI 共有モードのマイク録音（既定の通信デバイスに追従）。入力を float mono に落とし、
 /// 停止時に 16 kHz へ変換して返す。どの終了経路（停止・取消・エラー・Dispose）でもデバイスを解放する。
 /// </summary>
-public sealed class WasapiRecorder : IRecorder
+public sealed class WasapiRecorder(Func<string?>? deviceId = null) : IRecorder
 {
     /// <summary>停止要求後も取り込みを続ける時間。WASAPI のバッファに残る語尾を回収する。</summary>
     internal static readonly TimeSpan TailGrace = TimeSpan.FromMilliseconds(250);
@@ -37,7 +37,15 @@ public sealed class WasapiRecorder : IRecorder
             try
             {
                 using var enumerator = new MMDeviceEnumerator();
-                _device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+                // 保存済みの endpoint ID があればそれを使い、見つからなくても別デバイスへ黙って切り替えない（設計 §4.1）。
+                var id = deviceId?.Invoke();
+                if (id is null) _device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+                else
+                {
+                    try { _device = enumerator.GetDevice(id); }
+                    catch (Exception ex) { throw new RecorderException(RecorderErrorKind.DeviceUnavailable, "設定のマイクが見つかりません。設定でマイクを選び直してください", ex); }
+                    if (_device.State != DeviceState.Active) throw new RecorderException(RecorderErrorKind.DeviceUnavailable, "設定のマイクが使用できません。設定でマイクを選び直してください");
+                }
                 _capture = new WasapiCapture(_device);
                 _format = _capture.WaveFormat;
                 _mono = new List<float>(_format.SampleRate * 30);

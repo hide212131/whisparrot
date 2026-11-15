@@ -15,6 +15,10 @@ public static class HotkeyNegotiator
         new(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x4A, "Ctrl+Alt+J"),
     ];
 
+    /// <summary>設定のホットキーを先頭に、既定候補を続ける（重複は除く）。設計 §5 の交渉順。</summary>
+    public static IReadOnlyList<Hotkey> CandidatesFor(Hotkey configured) =>
+        [configured, .. DefaultCandidates.Where(c => c.Modifiers != configured.Modifiers || c.VirtualKey != configured.VirtualKey)];
+
     /// <summary>候補を順に試し、登録に成功した最初のものを採用する。全滅なら null。</summary>
     public static Hotkey? Negotiate(IEnumerable<Hotkey> candidates, Func<Hotkey, bool> tryRegister)
     {

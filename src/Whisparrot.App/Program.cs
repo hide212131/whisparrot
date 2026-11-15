@@ -22,6 +22,9 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--clipboard-probe") return Diagnostics.ClipboardProbe();
         if (args.Length > 0 && args[0] == "--pill-probe") return Diagnostics.PillProbe();
         if (args.Length > 0 && args[0] == "--record-probe") return Diagnostics.RecordProbe(args);
+        if (args.Length > 0 && args[0] == "--settings-probe") return Diagnostics.SettingsProbe(args);
+        if (args.Length > 0 && args[0] == "--autostart-probe") return Diagnostics.AutostartProbe();
+        if (args.Length > 0 && args[0] == "--model-download") return Diagnostics.ModelDownload(args);
         if (args.Length > 0 && args[0] == "--pipeline-file") return Diagnostics.PipelineFile(args, resources);
 
         using var mutex = new Mutex(true, SingletonMutexName, out var created);
