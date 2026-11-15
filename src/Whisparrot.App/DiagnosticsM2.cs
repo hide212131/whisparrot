@@ -148,3 +148,98 @@ internal static partial class Diagnostics
         return st.State == ModelState.Ready ? 0 : 1;
     }
 }
+
+internal static partial class Diagnostics
+{
+    /// <summary>
+    /// --settings-window-probe &lt;dir&gt;: 本物の SettingsWindow を（非対話セッションで）生成し、コントロールを設定して「保存」を実行する。
+    /// 自動起動はテスト用のサブキーへ、ホットキー登録は記録するだけの代役へ向ける。画面の見た目・操作感は確認できない。
+    /// </summary>
+    public static int SettingsWindowProbe(string[] args)
+    {
+        var dir = args.Length > 1 ? args[1] : throw new ArgumentException("ディレクトリが必要です");
+        Directory.CreateDirectory(dir);
+        var ok = true;
+        void Check(string name, bool pass) { Console.WriteLine($"{(pass ? "PASS" : "FAIL")} {name}"); ok &= pass; }
+
+        var testKey = @"Software\whisparrot-test\window-probe";
+        var app = new System.Windows.Application { ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown };
+        app.Startup += (_, _) =>
+        {
+            try { ok &= RunWindowProbe(dir, testKey, Check); }
+            catch (Exception ex) { Console.WriteLine($"FAIL exception {ex.GetType().Name}: {ex.Message}"); ok = false; }
+            finally { app.Shutdown(); }
+        };
+        app.Run();
+        try { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\whisparrot-test", false); } catch { }
+        Console.WriteLine(ok ? "settings_window_probe=PASS" : "settings_window_probe=FAIL");
+        return ok ? 0 : 1;
+    }
+
+    private static bool RunWindowProbe(string dir, string testKey, Action<string, bool> check)
+    {
+        var protector = new DpapiSecretProtector();
+        var settings = new SettingsService(new JsonSettingsStore(Path.Combine(dir, "config.json")));
+        var autostart = new AutostartService(Environment.ProcessPath!, testKey);
+        var network = new NetworkContext(() => ProxyConfig.FromSettings(settings.Current.Proxy, protector), ProxyEnvironment.Capture());
+        var models = new Whisparrot.Infrastructure.Models.ModelManager(Path.Combine(dir, "models"), Whisparrot.Infrastructure.Models.ModelCatalog.Embedded(), network);
+        var tried = new List<Hotkey>();
+        var hotkeyResult = (Ok: true, Err: 0);
+        var win = new Views.SettingsWindow(settings, protector, models, network, autostart, hk => { tried.Add(hk); return hotkeyResult; }, () => null, null);
+        win.Show();
+
+        T F<T>(string name) => (T)typeof(Views.SettingsWindow).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(win)!;
+        void Save() => typeof(Views.SettingsWindow).GetMethod("Save", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(win, null);
+        string Error() => F<System.Windows.Controls.TextBlock>("_error").Text;
+
+        F<System.Windows.Controls.CheckBox>("_ctrl").IsChecked = true;
+        F<System.Windows.Controls.CheckBox>("_alt").IsChecked = true;
+        F<System.Windows.Controls.CheckBox>("_win").IsChecked = false;
+        F<System.Windows.Controls.ComboBox>("_key").SelectedItem = "K";
+        F<System.Windows.Controls.CheckBox>("_autostartBox").IsChecked = true;
+        F<System.Windows.Controls.RadioButton>("_cleanCompat").IsChecked = true;
+        F<System.Windows.Controls.TextBox>("_baseUrl").Text = "https://api.example.com/v1";
+        F<System.Windows.Controls.TextBox>("_cleanModel").Text = "model-x";
+        F<System.Windows.Controls.PasswordBox>("_apiKey").Password = "sk-WINDOW-PLAINTEXT";
+        F<System.Windows.Controls.RadioButton>("_pxManual").IsChecked = true;
+        F<System.Windows.Controls.TextBox>("_pxUrl").Text = "http://proxy.example:3128";
+        F<System.Windows.Controls.TextBox>("_pxUser").Text = "user1";
+        F<System.Windows.Controls.PasswordBox>("_pxPass").Password = "pw-WINDOW-PLAINTEXT";
+        F<Dictionary<string, System.Windows.Controls.RadioButton>>("_modelRadios")["base"].IsChecked = true;
+
+        // 検証エラー: 不正な URL は保存されない
+        F<System.Windows.Controls.TextBox>("_baseUrl").Text = "http://example.com/v1";
+        Save();
+        check("invalid URL is refused with a message and nothing is written", Error().Contains("base_url") && !File.Exists(settings.ConfigPath));
+        F<System.Windows.Controls.TextBox>("_baseUrl").Text = "https://api.example.com/v1";
+
+        // ホットキー登録に失敗したら保存しない
+        hotkeyResult = (false, 1409);
+        Save();
+        check("hotkey registration failure blocks the save and shows the Win32 error", Error().Contains("1409") && !File.Exists(settings.ConfigPath) && !autostart.IsEnabled);
+        hotkeyResult = (true, 0);
+
+        win.Show();
+        Save();
+        var text = File.Exists(settings.ConfigPath) ? File.ReadAllText(settings.ConfigPath) : "";
+        var s = new JsonSettingsStore(settings.ConfigPath).Load().Settings;
+        check("saved: hotkey Ctrl+Alt+K tried and persisted", tried.Last().Display == "Ctrl+Alt+K" && s.Hotkey.Display == "Ctrl+Alt+K");
+        check("saved: model/cleanup/proxy persisted", s.Recognition.Model == "base" && s.Cleanup.Provider == CleanupProvider.Compatible
+            && s.Cleanup.Compatible.Model == "model-x" && s.Proxy is { Mode: ProxyMode.Manual, ManualUsername: "user1" });
+        check("saved: no plaintext secrets in config.json", !text.Contains("PLAINTEXT"));
+        check("saved: DPAPI values decrypt to what was typed",
+            protector.TryUnprotect(s.Cleanup.Compatible.ApiKeyDpapi, out var k) && k == "sk-WINDOW-PLAINTEXT"
+            && protector.TryUnprotect(s.Proxy.ManualPasswordDpapi, out var pw) && pw == "pw-WINDOW-PLAINTEXT");
+        check("saved: autostart written to the (test) Run key", autostart.CurrentValue == "\"" + Environment.ProcessPath + "\"");
+
+        // 再度開いて、空のままの伏せ字欄は既存の暗号文を維持する
+        var before = s.Cleanup.Compatible.ApiKeyDpapi;
+        win.Close();
+        var win2 = new Views.SettingsWindow(settings, protector, models, network, autostart, hk => (true, 0), () => null, null);
+        win2.Show();
+        typeof(Views.SettingsWindow).GetMethod("Save", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(win2, null);
+        var s2 = new JsonSettingsStore(settings.ConfigPath).Load().Settings;
+        check("re-save with empty password boxes keeps the existing ciphertext", s2.Cleanup.Compatible.ApiKeyDpapi == before && s2 == s);
+        return true;
+    }
+}
