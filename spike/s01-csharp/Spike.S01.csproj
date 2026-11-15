@@ -21,6 +21,8 @@
       展開先が BaseDirectory になり、CPU 認識が動く。
     -->
     <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <!-- 圧縮の効果を測るための切替。-p:Compress=true -->
+    <EnableCompressionInSingleFile Condition="'$(Compress)' == 'true'">true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -39,5 +41,22 @@
     <PackageReference Include="Whisper.net.Runtime.Cuda12.Windows" Version="1.9.1"
                       Condition="'$(Backend)' == 'cuda12'" />
   </ItemGroup>
+
+  <!--
+    S-03 の知見: Whisper.net.Runtime.* の targets は対象 OS / アーキに関係なく全 RID のネイティブを
+    出力へ入れる（Vulkan は linux-x64 の .so 58 MB まで入る）。Windows 以外と、対象外アーキを除外する。
+    -p:Prune=false で除外を無効化（素の増分を測る用）。
+  -->
+  <Target Name="PruneNativeRuntimes" BeforeTargets="AssignTargetPaths" Condition="'$(Prune)' != 'false'">
+    <ItemGroup>
+      <_PruneNone Include="@(None)"
+                  Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('%(FullPath)', '[\\/](linux|android|ios|tvos|maccatalyst|browser|osx|win-x86)[^\\/]*[\\/]'))" />
+      <_PruneNone Include="@(None)"
+                  Condition="'$(RuntimeIdentifier)' == 'win-x64' and $([System.Text.RegularExpressions.Regex]::IsMatch('%(FullPath)', '[\\/]win-arm64[\\/]'))" />
+      <_PruneNone Include="@(None)"
+                  Condition="'$(RuntimeIdentifier)' == 'win-arm64' and $([System.Text.RegularExpressions.Regex]::IsMatch('%(FullPath)', '[\\/]win-x64[\\/]'))" />
+      <None Remove="@(_PruneNone)" />
+    </ItemGroup>
+  </Target>
 
 </Project>
