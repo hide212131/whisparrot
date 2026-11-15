@@ -7,6 +7,9 @@ public enum SessionState
     Idle,
     Recording,
     Recognizing,
+
+    /// <summary>認識済みの原文を保持して整文中（設計 §3.3）。取消しても原文は投入しない。</summary>
+    Polishing,
     Inserting,
 
     /// <summary>認識済みだが未投入の一件を保持している（トレイから再試行・破棄）。</summary>
@@ -16,7 +19,7 @@ public enum SessionState
 /// <summary>UI が購読する状態のスナップショット。</summary>
 public sealed record SessionSnapshot(SessionState State, long SessionId, bool HasPendingText);
 
-public enum NoticeKind { Info, Error }
+public enum NoticeKind { Info, Warning, Error }
 
 /// <summary>控えめな通知（モーダルにしない）。UI はピル／トレイで短く表示する。</summary>
 public sealed record SessionNotice(NoticeKind Kind, string Message);
@@ -36,12 +39,14 @@ public sealed class SessionCoordinator : IDisposable
     private sealed record RecorderFailedEvt(RecorderError Error) : Evt;
     private sealed record StoppedEvt(long Id, PcmAudio? Pcm, Exception? Error) : Evt;
     private sealed record RecognizedEvt(long Id, RecognitionResult? Result, Exception? Error) : Evt;
+    private sealed record PolishedEvt(long Id, PolishResult Result) : Evt;
     private sealed record InjectedEvt(long Id, InjectResult Result) : Evt;
     private sealed record BarrierEvt(TaskCompletionSource Tcs) : Evt;
 
     private readonly IRecorder _recorder;
     private readonly IRecognizer _recognizer;
     private readonly ITextInjector _injector;
+    private readonly ITextPolisher? _polisher;
     private readonly Channel<Evt> _events = Channel.CreateUnbounded<Evt>(new UnboundedChannelOptions { SingleReader = true });
     private readonly Task _loop;
 
@@ -49,13 +54,16 @@ public sealed class SessionCoordinator : IDisposable
     private long _sessionId;
     private CancellationTokenSource? _sessionCts;
     private bool _stopping;          // Recording 中に停止処理を開始済み（Stopped 待ち）
+    private string? _rawText;        // 整文中の原文（整文が終わる／取消されるまで）
     private string? _pendingText;    // 未投入の一件（Failed 状態でだけ保持）
+    private PolishSetup _polish = new PolishSetup.Off(); // 録音開始時に固定する整文の構え
 
-    public SessionCoordinator(IRecorder recorder, IRecognizer recognizer, ITextInjector injector)
+    public SessionCoordinator(IRecorder recorder, IRecognizer recognizer, ITextInjector injector, ITextPolisher? polisher = null)
     {
         _recorder = recorder;
         _recognizer = recognizer;
         _injector = injector;
+        _polisher = polisher;
         _recorder.Failed += OnRecorderFailed;
         _loop = Task.Run(LoopAsync);
     }
@@ -107,6 +115,7 @@ public sealed class SessionCoordinator : IDisposable
                 SafeCancelRecorder();
                 _sessionCts?.Cancel();
                 _pendingText = null;
+                _rawText = null;
                 Notify(NoticeKind.Error, $"内部エラー: {ex.GetType().Name}");
                 SetState(SessionState.Idle);
             }
@@ -125,6 +134,7 @@ public sealed class SessionCoordinator : IDisposable
             case RecorderFailedEvt f: OnRecorderFailedEvt(f); break;
             case StoppedEvt s: OnStopped(s); break;
             case RecognizedEvt r: OnRecognized(r); break;
+            case PolishedEvt p: OnPolished(p); break;
             case InjectedEvt i: OnInjected(i); break;
         }
     }
@@ -159,7 +169,15 @@ public sealed class SessionCoordinator : IDisposable
             return;
         }
         _stopping = false;
+        _polish = PreparePolish();
         SetState(SessionState.Recording);
+    }
+
+    private PolishSetup PreparePolish()
+    {
+        if (_polisher is null) return new PolishSetup.Off();
+        try { return _polisher.Prepare(); }
+        catch { return new PolishSetup.Unconfigured("整文の設定を読み込めません"); }
     }
 
     private void BeginStop()
@@ -235,7 +253,76 @@ public sealed class SessionCoordinator : IDisposable
             SetState(SessionState.Idle);
             return;
         }
-        StartInject(text);
+        switch (_polish)
+        {
+            case PolishSetup.Ready ready:
+                StartPolish(text, ready);
+                break;
+            case PolishSetup.Unconfigured u:
+                // 整文を試みず原文を投入する。状態は控えめに知らせる。
+                Notify(NoticeKind.Warning, $"整文の設定が未完了のため、そのまま入力します（{u.Reason}）");
+                StartInject(text);
+                break;
+            default:
+                StartInject(text);
+                break;
+        }
+    }
+
+    private void StartPolish(string raw, PolishSetup.Ready ready)
+    {
+        var cts = _sessionCts = new CancellationTokenSource();
+        var id = _sessionId;
+        _rawText = raw;
+        SetState(SessionState.Polishing);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                // 整文側の実装が期限を守らなくても、期限で必ず原文へ戻る（取消された場合はイベントを捨てられる）。
+                var work = Task.Run(() => ready.PolishAsync(raw, cts.Token), CancellationToken.None);
+                _ = work.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                var winner = await Task.WhenAny(work, Task.Delay(ready.Timeout, cts.Token)).ConfigureAwait(false);
+                Post(new PolishedEvt(id, winner == work
+                    ? await work.ConfigureAwait(false)
+                    : PolishResult.Fallback(PolishFailure.Timeout)));
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                // 利用者の取消。状態はすでに変わっており、結果は使われない。
+            }
+            catch
+            {
+                Post(new PolishedEvt(id, PolishResult.Fallback(PolishFailure.Error)));
+            }
+        });
+    }
+
+    private void OnPolished(PolishedEvt p)
+    {
+        if (p.Id != _sessionId || _state != SessionState.Polishing) return; // 取消後の遅れた完了
+        DisposeSessionCts();
+        var raw = _rawText!;
+        _rawText = null;
+        var r = p.Result;
+        if (r.IsSuccess && !string.IsNullOrWhiteSpace(r.Text))
+        {
+            StartInject(r.Text.Trim());
+            return;
+        }
+        var why = r.IsSuccess ? "空の応答" : r.Failure switch
+        {
+            PolishFailure.Timeout => "時間切れ",
+            PolishFailure.Network => "接続できません",
+            PolishFailure.Auth => "認証エラー",
+            PolishFailure.Http => r.Detail ?? "サーバーエラー",
+            PolishFailure.Empty => "空の応答",
+            PolishFailure.TooLarge => "応答が大きすぎます",
+            PolishFailure.Incomplete => "応答が未完了",
+            _ => "応答を解釈できません",
+        };
+        Notify(NoticeKind.Warning, $"整文できなかったため、そのまま入力しました（{why}）");
+        StartInject(raw);
     }
 
     private void StartInject(string text)
@@ -290,6 +377,14 @@ public sealed class SessionCoordinator : IDisposable
             case SessionState.Recognizing:
                 _sessionCts?.Cancel();
                 DisposeSessionCts();
+                _sessionId++;
+                SetState(SessionState.Idle);
+                break;
+            case SessionState.Polishing:
+                // 取消は投入しない（設計 §7.1: キャンセル時に原文を勝手に貼り付けない。M1 の取消と同じ）。
+                _sessionCts?.Cancel();
+                DisposeSessionCts();
+                _rawText = null;
                 _sessionId++;
                 SetState(SessionState.Idle);
                 break;

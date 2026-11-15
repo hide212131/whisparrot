@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Models\model-catalog.json" LogicalName="model-catalog.json" />
+    <EmbeddedResource Include="Polish\cleanup-instructions.txt" LogicalName="cleanup-instructions.txt" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Whisparrot.Tests" />

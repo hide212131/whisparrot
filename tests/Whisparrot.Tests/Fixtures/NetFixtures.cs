@@ -7,7 +7,10 @@ using System.Text;
 
 namespace Whisparrot.Tests.Fixtures;
 
-internal sealed record TestRequest(string Method, string Target, string? Host, IReadOnlyDictionary<string, string> Headers);
+internal sealed record TestRequest(string Method, string Target, string? Host, IReadOnlyDictionary<string, string> Headers, byte[]? Body = null)
+{
+    public string BodyText => Body is null ? "" : Encoding.UTF8.GetString(Body);
+}
 
 /// <summary>Body は <see cref="HoldAfter"/> バイトを送った後、<see cref="Release"/> が完了するまで止める（取消・同時取得の試験用）。</summary>
 internal sealed record TestResponse(int Status, byte[] Body, Dictionary<string, string>? Headers = null, int? ContentLength = null, int? HoldAfter = null, Task? Release = null)
@@ -64,6 +67,7 @@ internal sealed class TestTlsServer : IDisposable
                 var head = await HttpText.ReadHead(ssl, _cts.Token);
                 if (head is null) return;
                 var req = HttpText.Parse(head);
+                req = req with { Body = await HttpText.ReadBody(ssl, req, _cts.Token) };
                 lock (_lock) Requests.Add(req);
                 var r = _handler(req);
                 var sb = new StringBuilder($"HTTP/1.1 {r.Status} X\r\nContent-Length: {r.ContentLength ?? r.Body.Length}\r\nConnection: close\r\n");
@@ -186,6 +190,21 @@ internal static class HttpText
             if (sb.Length > 65536) return null;
         }
         return sb.ToString();
+    }
+
+    /// <summary>Content-Length 分の本文を読む（無ければ null）。</summary>
+    public static async Task<byte[]?> ReadBody(Stream s, TestRequest req, CancellationToken ct)
+    {
+        if (!req.Headers.TryGetValue("Content-Length", out var len) || !int.TryParse(len, out var n)) return null;
+        var buf = new byte[n];
+        var read = 0;
+        while (read < n)
+        {
+            var m = await s.ReadAsync(buf.AsMemory(read), ct);
+            if (m == 0) break;
+            read += m;
+        }
+        return buf;
     }
 
     public static TestRequest Parse(string head)

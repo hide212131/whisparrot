@@ -112,9 +112,11 @@ internal static partial class Diagnostics
         var order = backend == "cpu" ? new[] { "cpu" } : new[] { "vulkan", "cpu" };
         // --use-settings: config.json の recognition.model と固定 catalog（SHA-256 照合つき）でモデルを解決する（T07/T09 の結線の確認）。
         Func<ModelTarget>? resolver = null;
+        Whisparrot.Infrastructure.Settings.SettingsService? usedSettings = null;
         if (args.Contains("--use-settings"))
         {
-            var settings = new Whisparrot.Infrastructure.Settings.SettingsService(new Whisparrot.Infrastructure.Settings.JsonSettingsStore(AppPaths.ConfigPath));
+            var settings = new Whisparrot.Infrastructure.Settings.SettingsService(new Whisparrot.Infrastructure.Settings.JsonSettingsStore(Opt("--config") ?? AppPaths.ConfigPath));
+            usedSettings = settings;
             var net = new Whisparrot.Infrastructure.Network.NetworkContext(() => Whisparrot.Infrastructure.Network.ProxyConfig.Environment, Whisparrot.Infrastructure.Network.ProxyEnvironment.Capture());
             var models = new Whisparrot.Infrastructure.Models.ModelManager(AppPaths.ModelsDirectory, Whisparrot.Infrastructure.Models.ModelCatalog.Embedded(), net);
             resolver = () =>
@@ -128,7 +130,15 @@ internal static partial class Diagnostics
         using var recognizer = new WhisperRecognizer(new WhisperRecognizerOptions(
             model, order, native.AvailableBackends, ModelResolver: resolver));
         var injector = new ConsoleInjector();
-        using var coordinator = new SessionCoordinator(new WavFileRecorder(wav), recognizer, injector);
+        // --use-settings のときは config.json の整文設定（cleanup.provider=compatible など）も実際に使う（T11 の結線の確認）。
+        ITextPolisher? polisher = null;
+        if (usedSettings is not null)
+        {
+            var protector = new Whisparrot.Infrastructure.Settings.DpapiSecretProtector();
+            var cleanupNet = new Whisparrot.Infrastructure.Network.NetworkContext(() => Whisparrot.Infrastructure.Network.ProxyConfig.FromSettings(usedSettings.Current.Proxy, protector), Whisparrot.Infrastructure.Network.ProxyEnvironment.Capture());
+            polisher = new Whisparrot.Infrastructure.Polish.SettingsTextPolisher(() => usedSettings.Current, protector, cleanupNet);
+        }
+        using var coordinator = new SessionCoordinator(new WavFileRecorder(wav), recognizer, injector, polisher);
 
         var t0 = Stopwatch.StartNew();
         var done = new ManualResetEventSlim();

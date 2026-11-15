@@ -166,7 +166,7 @@ internal sealed class SettingsWindow : Window
         _baseUrl.TextChanged += (_, _) => UpdateDest();
         return Group("整文", _cleanOff, _cleanCompat, _cleanChatGpt,
             Row("ベース URL", _baseUrl), _destHost, Row("API キー", _apiKey), _clearKey, Row("モデル名", _cleanModel),
-            new TextBlock { Text = "整文の設定は保存のみで、整文の実行は今後の版（T11）で有効になります。API キーは Windows のユーザー保護（DPAPI）で暗号化して保存します。", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray });
+            new TextBlock { Text = "「互換エンドポイント」を選ぶと、認識したテキストだけをここで指定した送信先へ送って整文します（失敗・未設定・時間切れのときは認識結果をそのまま入力）。API キーは Windows のユーザー保護（DPAPI）で暗号化して保存します。ChatGPT 経由は未対応です。", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray });
     }
 
     private UIElement BuildNetwork()

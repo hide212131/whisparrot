@@ -7,6 +7,7 @@ using Whisparrot.Infrastructure;
 using Whisparrot.Infrastructure.Audio;
 using Whisparrot.Infrastructure.Models;
 using Whisparrot.Infrastructure.Network;
+using Whisparrot.Infrastructure.Polish;
 using Whisparrot.Infrastructure.Recognition;
 using Whisparrot.Infrastructure.Settings;
 
@@ -40,7 +41,8 @@ internal static class TrayApp
             }));
         var recorder = new WasapiRecorder(() => settings.Current.MicrophoneId);
         var injector = new TextInjector();
-        var coordinator = new SessionCoordinator(recorder, recognizer, injector);
+        var polisher = new SettingsTextPolisher(() => settings.Current, protector, network);
+        var coordinator = new SessionCoordinator(recorder, recognizer, injector, polisher);
 
         var pill = new PillWindow();
         var hotkey = new HotkeyService();
@@ -100,7 +102,7 @@ internal static class TrayApp
         });
         coordinator.Noticed += n => app.Dispatcher.BeginInvoke(() =>
             tray.ShowBalloonTip(2500, "whisparrot", n.Message,
-                n.Kind == NoticeKind.Error ? System.Windows.Forms.ToolTipIcon.Warning : System.Windows.Forms.ToolTipIcon.Info));
+                n.Kind is NoticeKind.Error or NoticeKind.Warning ? System.Windows.Forms.ToolTipIcon.Warning : System.Windows.Forms.ToolTipIcon.Info));
         hotkey.Pressed += () => coordinator.Toggle();
 
         // 適用範囲（設計 §3.2）: ホットキー・自動起動は設定画面の保存時に即時。モデル・マイクは次のセッションから。

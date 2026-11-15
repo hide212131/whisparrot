@@ -128,6 +128,10 @@ internal sealed class PillWindow : Window
                 SetLabel("認識中", cancelEnabled: true);
                 Present();
                 break;
+            case SessionState.Polishing:
+                SetLabel("整文中", cancelEnabled: true);
+                Present();
+                break;
             case SessionState.Inserting:
                 SetLabel("入力中", cancelEnabled: false);
                 Present();
