@@ -8,7 +8,7 @@ internal static class TrayApp
 {
     public static int Run(bool bench)
     {
-        var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        var app = new System.Windows.Application { ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown };
 
         var pill = new PillWindow();
         var tray = new System.Windows.Forms.NotifyIcon

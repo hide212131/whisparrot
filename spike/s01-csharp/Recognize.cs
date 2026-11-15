@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using Whisper.net;
 using Whisper.net.LibraryLoader;
 
@@ -49,15 +50,10 @@ internal static class Recognize
             for (var i = 0; i < repeat; i++)
             {
                 var sw = Stopwatch.StartNew();
-                var text = new System.Text.StringBuilder();
-                using var fs = File.OpenRead(wav);
-                foreach (var seg in processor.Process(fs))
-                {
-                    text.Append(seg.Text);
-                }
+                var text = RunOnce(processor, wav).GetAwaiter().GetResult();
                 sw.Stop();
                 Console.WriteLine($"run{i + 1}_recognize_ms={sw.ElapsedMilliseconds}");
-                if (i == 0) Console.WriteLine($"text={text.ToString().Trim()}");
+                if (i == 0) Console.WriteLine($"text={text.Trim()}");
             }
             var p = Process.GetCurrentProcess();
             Console.WriteLine($"peak_working_set_mib={p.PeakWorkingSet64 / 1048576.0:F1}");
@@ -70,6 +66,17 @@ internal static class Recognize
             Console.WriteLine($"loaded_library={RuntimeOptions.LoadedLibrary}");
             return 1;
         }
+    }
+
+    private static async Task<string> RunOnce(WhisperProcessor processor, string wav)
+    {
+        var text = new System.Text.StringBuilder();
+        await using var fs = File.OpenRead(wav);
+        await foreach (var seg in processor.ProcessAsync(fs))
+        {
+            text.Append(seg.Text);
+        }
+        return text.ToString();
     }
 
     private static string? Opt(string[] args, string name)

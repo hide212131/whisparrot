@@ -39,7 +39,7 @@ internal sealed class PillWindow : Window
                 Text = "● 録音中 (placeholder)",
                 Foreground = Brushes.White,
                 VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Center,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
             },
         };
         SourceInitialized += (_, _) =>
