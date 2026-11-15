@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using Whisper.net;
 using Whisper.net.LibraryLoader;
+using Whisper.net.Logger;
 
 namespace Spike.S01;
 
@@ -33,6 +34,12 @@ internal static class Recognize
             "auto" => [RuntimeLibrary.Cuda, RuntimeLibrary.Cuda12, RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu],
             _ => throw new ArgumentException($"unknown order {order}"),
         };
+
+        if (args.Contains("--log"))
+        {
+            // whisper.cpp / ggml のログ（GPU デバイス検出結果など）を標準出力へ出す
+            LogProvider.AddLogger((level, msg) => Console.WriteLine($"[whisper:{level}] {msg?.TrimEnd()}"));
+        }
 
         try
         {
