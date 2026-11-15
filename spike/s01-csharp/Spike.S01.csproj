@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>spike-s01</AssemblyName>
+    <RootNamespace>Spike.S01</RootNamespace>
+    <PublishTrimmed>false</PublishTrimmed>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- S-03 計測用: -p:Backend=cpu|vulkan|cuda|cuda12|all（既定 cpu）。 -->
+    <Backend Condition="'$(Backend)' == ''">cpu</Backend>
+    <!-- 単一ファイルへ runtimes/ 配下の DLL も取り込むか。-p:EmbedAll=true で有効化 -->
+    <IncludeAllContentForSelfExtract Condition="'$(EmbedAll)' == 'true'">true</IncludeAllContentForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1"
+                      Condition="'$(Backend)' == 'vulkan' or '$(Backend)' == 'all'" />
+    <PackageReference Include="Whisper.net.Runtime.Cuda.Windows" Version="1.9.1"
+                      Condition="'$(Backend)' == 'cuda' or '$(Backend)' == 'all'" />
+    <PackageReference Include="Whisper.net.Runtime.Cuda12.Windows" Version="1.9.1"
+                      Condition="'$(Backend)' == 'cuda12'" />
+  </ItemGroup>
+
+</Project>
