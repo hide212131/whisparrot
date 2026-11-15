@@ -15,8 +15,12 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <!-- S-03 計測用: -p:Backend=cpu|vulkan|cuda|cuda12|all（既定 cpu）。 -->
     <Backend Condition="'$(Backend)' == ''">cpu</Backend>
-    <!-- 単一ファイルへ runtimes/ 配下の DLL も取り込むか。-p:EmbedAll=true で有効化 -->
-    <IncludeAllContentForSelfExtract Condition="'$(EmbedAll)' == 'true'">true</IncludeAllContentForSelfExtract>
+    <!--
+      S-01 の知見: IncludeNativeLibrariesForSelfExtract だけでは Whisper.net が runtimes/<rid>/ を見つけられない
+      （AppContext.BaseDirectory が exe のフォルダのまま）。IncludeAllContentForSelfExtract を併用して初めて
+      展開先が BaseDirectory になり、CPU 認識が動く。
+    -->
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
   </PropertyGroup>
 
   <ItemGroup>
