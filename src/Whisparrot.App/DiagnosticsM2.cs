@@ -185,7 +185,7 @@ internal static partial class Diagnostics
         var models = new Whisparrot.Infrastructure.Models.ModelManager(Path.Combine(dir, "models"), Whisparrot.Infrastructure.Models.ModelCatalog.Embedded(), network);
         var tried = new List<Hotkey>();
         var hotkeyResult = (Ok: true, Err: 0);
-        var win = new Views.SettingsWindow(settings, protector, models, network, autostart, hk => { tried.Add(hk); return hotkeyResult; }, () => null, null);
+        var win = new Views.SettingsWindow(settings, protector, models, network, autostart, hk => { tried.Add(hk); return hotkeyResult; }, () => null, () => null, null);
         win.Show();
 
         T F<T>(string name) => (T)typeof(Views.SettingsWindow).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(win)!;
@@ -226,6 +226,8 @@ internal static partial class Diagnostics
         check("saved: hotkey Ctrl+Alt+K tried and persisted", tried.Last().Display == "Ctrl+Alt+K" && s.Hotkey.Display == "Ctrl+Alt+K");
         check("saved: model/cleanup/proxy persisted", s.Recognition.Model == "base" && s.Cleanup.Provider == CleanupProvider.Compatible
             && s.Cleanup.Compatible.Model == "model-x" && s.Proxy is { Mode: ProxyMode.Manual, ManualUsername: "user1" });
+        check("saved: next startup's negotiation order leads with the explicitly saved key, then the defaults",
+            string.Join(",", new SettingsHotkeyStore(new SettingsService(new JsonSettingsStore(settings.ConfigPath))).NegotiationOrder().Select(c => c.Display)) == "Ctrl+Alt+K,Win+J,Ctrl+Win+J,Ctrl+Alt+J");
         check("saved: no plaintext secrets in config.json", !text.Contains("PLAINTEXT"));
         check("saved: DPAPI values decrypt to what was typed",
             protector.TryUnprotect(s.Cleanup.Compatible.ApiKeyDpapi, out var k) && k == "sk-WINDOW-PLAINTEXT"
@@ -235,7 +237,7 @@ internal static partial class Diagnostics
         // 再度開いて、空のままの伏せ字欄は既存の暗号文を維持する
         var before = s.Cleanup.Compatible.ApiKeyDpapi;
         win.Close();
-        var win2 = new Views.SettingsWindow(settings, protector, models, network, autostart, hk => (true, 0), () => null, null);
+        var win2 = new Views.SettingsWindow(settings, protector, models, network, autostart, hk => (true, 0), () => null, () => null, null);
         win2.Show();
         typeof(Views.SettingsWindow).GetMethod("Save", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(win2, null);
         var s2 = new JsonSettingsStore(settings.ConfigPath).Load().Settings;

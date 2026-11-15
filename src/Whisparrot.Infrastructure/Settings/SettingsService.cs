@@ -57,13 +57,12 @@ public sealed class SettingsService
     }
 }
 
-/// <summary><see cref="IAdoptedHotkeyStore"/> の実物。交渉の結果、設定のキーと違うものを採用したときだけ保存する。</summary>
-public sealed class SettingsHotkeyStore(SettingsService settings) : IAdoptedHotkeyStore
+/// <summary>
+/// 起動時のホットキー交渉順（設定のキー → 既定候補順）。<b>交渉で採用されたキーは保存しない</b>:
+/// <c>config.json</c> の hotkey を書くのは、設定ウィンドウで利用者が明示的に選んで保存したときだけ。
+/// 一時的な登録失敗（他アプリが一時的に Win+J を占有など）で次善のキーが保存され、以後それが先頭候補になり続ける粘着性を避ける。
+/// </summary>
+public sealed class SettingsHotkeyStore(SettingsService settings)
 {
-    public void Record(Hotkey? adopted, IReadOnlyList<(string Display, bool Ok, int Error)> attempts)
-    {
-        if (adopted is null || !settings.IsWritable) return; // 全滅や読み込み失敗中は何も書かない
-        if (HotkeyFormat.SameKey(adopted, settings.Current.Hotkey)) return;
-        settings.Update(s => s with { Hotkey = adopted });
-    }
+    public IReadOnlyList<Hotkey> NegotiationOrder() => HotkeyNegotiator.CandidatesFor(settings.Current.Hotkey);
 }

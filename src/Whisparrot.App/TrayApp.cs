@@ -56,7 +56,7 @@ internal static class TrayApp
         {
             if (settingsWindow is not null) { settingsWindow.Activate(); return; }
             settingsWindow = new SettingsWindow(settings, protector, models, network, autostart,
-                hk => (hotkey.TryReplace(hk, out var err), err), () => recognizer.LastBackend, notice);
+                hk => (hotkey.TryReplace(hk, out var err), err), () => hotkey.Adopted, () => recognizer.LastBackend, notice);
             settingsWindow.Closed += (_, _) => settingsWindow = null;
             settingsWindow.Show();
             settingsWindow.Activate();
@@ -121,14 +121,12 @@ internal static class TrayApp
                 return;
             }
 
-            var adopted = hotkey.Register(HotkeyNegotiator.CandidatesFor(settings.Current.Hotkey));
-            try { new SettingsHotkeyStore(settings).Record(adopted, hotkey.Attempts); }
-            catch (Exception ex) { Console.WriteLine("hotkey_persist_failed=" + ex.GetType().Name); }
+            // 採用キーは保存しない（設定のキーは設定ウィンドウでの明示保存だけが変える）。
+            var adopted = hotkey.Register(new SettingsHotkeyStore(settings).NegotiationOrder());
             UpdateTrayText();
             foreach (var (display, ok, error) in hotkey.Attempts)
                 Console.WriteLine($"hotkey {display}: {(ok ? "OK" : $"FAILED win32_error={error}")}");
             Console.WriteLine($"hotkey_adopted={adopted?.Display ?? "(none)"}");
-            Console.WriteLine($"hotkey_persisted={settings.Current.Hotkey.Display}");
             if (adopted is null)
                 tray.ShowBalloonTip(4000, "whisparrot", "ホットキーを登録できませんでした。トレイのメニューから開始/停止できます。", System.Windows.Forms.ToolTipIcon.Warning);
 

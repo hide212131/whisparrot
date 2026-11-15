@@ -15,7 +15,10 @@ public static class HotkeyNegotiator
         new(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x4A, "Ctrl+Alt+J"),
     ];
 
-    /// <summary>設定のホットキーを先頭に、既定候補を続ける（重複は除く）。設計 §5 の交渉順。</summary>
+    /// <summary>
+    /// 設定のホットキーを先頭に、既定候補を続ける（重複は除く）。設計 §5 の交渉順。
+    /// 交渉で採用されたキーは設定へ保存しない（一時的な登録失敗が次回以降の先頭候補として居座らないように）。
+    /// </summary>
     public static IReadOnlyList<Hotkey> CandidatesFor(Hotkey configured) =>
         [configured, .. DefaultCandidates.Where(c => c.Modifiers != configured.Modifiers || c.VirtualKey != configured.VirtualKey)];
 
@@ -28,10 +31,4 @@ public static class HotkeyNegotiator
         }
         return null;
     }
-}
-
-/// <summary>採用したホットキーの記録先。M1 はメモリのみ。T07 で設定ストアへ差し替える境界。</summary>
-public interface IAdoptedHotkeyStore
-{
-    void Record(Hotkey? adopted, IReadOnlyList<(string Display, bool Ok, int Error)> attempts);
 }

@@ -22,6 +22,7 @@ internal sealed class SettingsWindow : Window
     private readonly NetworkContext _network;
     private readonly AutostartService _autostart;
     private readonly Func<Hotkey, (bool Ok, int Error)> _tryHotkey;
+    private readonly Func<Hotkey?> _adoptedHotkey;
     private readonly Func<string?> _backendText;
 
     private readonly CheckBox _ctrl = new() { Content = "Ctrl" }, _alt = new() { Content = "Alt" }, _shift = new() { Content = "Shift" }, _win = new() { Content = "Win" };
@@ -56,10 +57,10 @@ internal sealed class SettingsWindow : Window
     private readonly TextBlock _error = new() { Foreground = System.Windows.Media.Brushes.Firebrick, TextWrapping = TextWrapping.Wrap };
 
     public SettingsWindow(SettingsService settings, ISecretProtector protector, ModelManager models, NetworkContext network,
-        AutostartService autostart, Func<Hotkey, (bool Ok, int Error)> tryHotkey, Func<string?> backendText, string? notice)
+        AutostartService autostart, Func<Hotkey, (bool Ok, int Error)> tryHotkey, Func<Hotkey?> adoptedHotkey, Func<string?> backendText, string? notice)
     {
         _settings = settings; _protector = protector; _models = models; _network = network;
-        _autostart = autostart; _tryHotkey = tryHotkey; _backendText = backendText;
+        _autostart = autostart; _tryHotkey = tryHotkey; _adoptedHotkey = adoptedHotkey; _backendText = backendText;
 
         Title = "whisparrot 設定";
         Width = 520; Height = 700; MinWidth = 440;
@@ -328,7 +329,10 @@ internal sealed class SettingsWindow : Window
         if (issues.Count > 0) { _error.Text = string.Join("\n", issues); return; }
         if (!_settings.IsWritable) { _error.Text = "config.json を読み込めなかったため、保存できません。" + _settings.LoadResult.Describe(); return; }
 
+        // 設定のキーが変わったときだけ登録を試す。巻き戻しは「設定のキー」ではなく直前に実際に有効だった（採用済みの）キーへ。
         var hotkeyChanged = !HotkeyFormat.SameKey(hotkey, cur.Hotkey);
+        var previouslyActive = _adoptedHotkey();
+        void RestoreHotkey() { if (hotkeyChanged && previouslyActive is not null) _tryHotkey(previouslyActive); }
         if (hotkeyChanged)
         {
             var (ok, err) = _tryHotkey(hotkey);
@@ -341,7 +345,7 @@ internal sealed class SettingsWindow : Window
         }
         catch (Exception ex)
         {
-            if (hotkeyChanged) _tryHotkey(cur.Hotkey);
+            RestoreHotkey();
             _error.Text = $"自動起動の設定に失敗しました（保存していません）: {ex.Message}";
             return;
         }
@@ -351,7 +355,7 @@ internal sealed class SettingsWindow : Window
         }
         catch (Exception ex)
         {
-            if (hotkeyChanged) _tryHotkey(cur.Hotkey);
+            RestoreHotkey();
             try { if (next.Autostart != cur.Autostart) _autostart.Apply(cur.Autostart); } catch { }
             _error.Text = $"保存に失敗しました: {ex.Message}";
             return;

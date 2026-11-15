@@ -189,14 +189,13 @@ public sealed class SettingsTests : IDisposable
     }
 
     [Fact]
-    public void Service_does_not_overwrite_when_load_failed_and_no_adopted_hotkey_is_written()
+    public void Service_does_not_overwrite_when_load_failed()
     {
         File.WriteAllText(ConfigPath, "{ broken");
         var before = Hash(ConfigPath);
         var svc = new SettingsService(NewStore());
         Assert.False(svc.IsWritable);
         Assert.Equal(AppSettings.Default, svc.Current);
-        new SettingsHotkeyStore(svc).Record(HotkeyFormat.Create(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x4A), []);
         Assert.Throws<SettingsBlockedException>(() => svc.Update(s => s with { Autostart = true }));
         Assert.Equal(before, Hash(ConfigPath));
     }
@@ -298,23 +297,21 @@ public sealed class SettingsTests : IDisposable
     }
 
     [Fact]
-    public void Save_raises_Changed_with_old_and_new_and_persists_adopted_hotkey()
+    public void Save_raises_Changed_with_old_and_new_and_is_silent_when_nothing_changed()
     {
         var svc = new SettingsService(NewStore());
         var events = new List<(AppSettings Old, AppSettings New)>();
         svc.Changed += (o, n) => events.Add((o, n));
-        var store = new SettingsHotkeyStore(svc);
 
-        store.Record(HotkeyFormat.WinJ, []); // 既定と同じなら何も書かない
+        svc.Save(AppSettings.Default); // 変更なし
         Assert.Empty(events);
-        Assert.False(File.Exists(ConfigPath));
 
-        var adopted = HotkeyFormat.Create(HotkeyModifiers.Control | HotkeyModifiers.Win, 0x4A);
-        store.Record(adopted, []);
-        Assert.Single(events);
+        var chosen = HotkeyFormat.Create(HotkeyModifiers.Control | HotkeyModifiers.Win, 0x4A);
+        svc.Update(s => s with { Hotkey = chosen });
+        var e = Assert.Single(events);
+        Assert.Equal("Win+J", e.Old.Hotkey.Display);
+        Assert.Equal("Ctrl+Win+J", e.New.Hotkey.Display);
         Assert.Equal("Ctrl+Win+J", NewStore().Load().Settings.Hotkey.Display);
-        store.Record(null, [("Win+J", false, 1459)]); // 全滅なら書かない
-        Assert.Single(events);
     }
 
     // ---- DPAPI ----

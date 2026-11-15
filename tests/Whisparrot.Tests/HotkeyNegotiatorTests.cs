@@ -31,3 +31,16 @@ public sealed class HotkeyNegotiatorTests
         Assert.Null(HotkeyNegotiator.Negotiate(HotkeyNegotiator.DefaultCandidates, _ => false));
     }
 }
+
+public sealed class HotkeyCandidateOrderTests
+{
+    [Fact]
+    public void Configured_key_leads_then_defaults_without_duplicates()
+    {
+        var d = HotkeyNegotiator.DefaultCandidates;
+        Assert.Equal(["Win+J", "Ctrl+Win+J", "Ctrl+Alt+J"], HotkeyNegotiator.CandidatesFor(d[0]).Select(c => c.Display));
+        Assert.Equal(["Ctrl+Win+J", "Win+J", "Ctrl+Alt+J"], HotkeyNegotiator.CandidatesFor(d[1]).Select(c => c.Display));
+        var custom = Whisparrot.Core.Settings.HotkeyFormat.Create(HotkeyModifiers.Alt | HotkeyModifiers.Shift, 0x4B);
+        Assert.Equal(["Alt+Shift+K", "Win+J", "Ctrl+Win+J", "Ctrl+Alt+J"], HotkeyNegotiator.CandidatesFor(custom).Select(c => c.Display));
+    }
+}
