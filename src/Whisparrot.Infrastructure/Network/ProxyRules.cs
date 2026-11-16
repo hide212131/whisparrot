@@ -16,7 +16,8 @@ public sealed record ProxyTarget(Uri Uri, NetworkCredential? Credential)
     public string HostPort => $"{Uri.Host}:{Uri.Port}";
 
     /// <summary>
-    /// <c>host:port</c> / <c>http://[user[:pass]@]host[:port]</c> を正規化する。https:// や socks 等は受け付けない。
+    /// <c>host:port</c> / <c>http|https://[user[:pass]@]host[:port]</c> を正規化する。socks 等は受け付けない。
+    /// https:// はプロキシ自体への接続を TLS で行う（証明書は OS の信頼ストアで検証）。
     /// </summary>
     public static ProxyTarget Parse(string raw, string source)
     {
@@ -33,7 +34,7 @@ public sealed record ProxyTarget(Uri Uri, NetworkCredential? Credential)
             var parts = uri.UserInfo.Split(':', 2);
             cred = new NetworkCredential(Uri.UnescapeDataString(parts[0]), parts.Length > 1 ? Uri.UnescapeDataString(parts[1]) : "");
         }
-        return new ProxyTarget(new Uri($"http://{uri.Host}:{uri.Port}"), cred);
+        return new ProxyTarget(new Uri($"{uri.Scheme}://{uri.Host}:{uri.Port}"), cred);
     }
 
     private static string StripUserInfo(string url)

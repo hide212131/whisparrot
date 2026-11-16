@@ -105,9 +105,13 @@ internal sealed class TestConnectProxy : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly object _lock = new();
 
-    public TestConnectProxy(string? requireBasic = null)
+    private readonly X509Certificate2? _tls;
+
+    /// <param name="tls">指定すると、プロキシ自体への接続を TLS で受ける（HTTPS プロキシ）。</param>
+    public TestConnectProxy(string? requireBasic = null, X509Certificate2? tls = null)
     {
         RequireBasic = requireBasic;
+        _tls = tls;
         _listener.Start();
         Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
         _ = Task.Run(AcceptLoop);
@@ -119,7 +123,8 @@ internal sealed class TestConnectProxy : IDisposable
     public Dictionary<string, int> Map { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<ConnectRecord> Connects { get; } = [];
     public int AuthFailures { get; private set; }
-    public string Url => $"http://127.0.0.1:{Port}";
+    public int TlsHandshakeFailures { get; private set; }
+    public string Url => $"{(_tls is null ? "http" : "https")}://127.0.0.1:{Port}";
 
     public IReadOnlyList<ConnectRecord> Tunnelled { get { lock (_lock) return Connects.Where(c => Map.ContainsKey(c.Host)).ToList(); } }
 
@@ -139,7 +144,14 @@ internal sealed class TestConnectProxy : IDisposable
         {
             try
             {
-                var stream = client.GetStream();
+                Stream stream = client.GetStream();
+                if (_tls is not null)
+                {
+                    var ssl = new SslStream(stream, false);
+                    try { await ssl.AuthenticateAsServerAsync(_tls); }
+                    catch { lock (_lock) TlsHandshakeFailures++; return; }
+                    stream = ssl;
+                }
                 while (true)
                 {
                     var head = await HttpText.ReadHead(stream, _cts.Token);
@@ -220,4 +232,55 @@ internal static class HttpText
         headers.TryGetValue("Host", out var host);
         return new TestRequest(first[0], first[1], host, headers);
     }
+}
+
+/// <summary>テスト用 CA と、そこから発行する葉証明書（HTTPS プロキシの検証用）。</summary>
+internal sealed class TestCa : IDisposable
+{
+    private readonly X509Certificate2 _ca;
+
+    public TestCa()
+    {
+        using var rsa = RSA.Create(2048);
+        var req = new CertificateRequest("CN=whisparrot-test-ca", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        req.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        req.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign, true));
+        using var self = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        _ca = new X509Certificate2(self.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.Exportable);
+    }
+
+    /// <summary>SAN に <paramref name="dns"/> / <paramref name="ip"/> を持つサーバー証明書を発行する。</summary>
+    public X509Certificate2 Issue(string? dns, IPAddress? ip)
+    {
+        using var rsa = RSA.Create(2048);
+        var req = new CertificateRequest("CN=whisparrot-test-proxy", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var san = new SubjectAlternativeNameBuilder();
+        if (dns is not null) san.AddDnsName(dns);
+        if (ip is not null) san.AddIpAddress(ip);
+        req.CertificateExtensions.Add(san.Build());
+        req.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));
+        var serial = RandomNumberGenerator.GetBytes(8);
+        using var leaf = req.Create(_ca, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddHours(12), serial);
+        using var withKey = leaf.CopyWithPrivateKey(rsa);
+        return new X509Certificate2(withKey.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.Exportable);
+    }
+
+    /// <summary>
+    /// このテスト用 CA を信頼の起点にして、ホスト名の一致を含め通常どおり検証する（テスト専用の入口へ渡す）。
+    /// <paramref name="alsoTrust"/> は対象サーバー（自己署名）をハッシュで受け入れるための既存の方式。
+    /// </summary>
+    public Action<SslClientAuthenticationOptions> Trust(TestTlsServer? alsoTrust = null) => o =>
+        o.RemoteCertificateValidationCallback = (_, cert, _, errors) =>
+        {
+            if (cert is null) return false;
+            if (alsoTrust is not null && cert.GetCertHashString() == alsoTrust.Certificate.GetCertHashString()) return true;
+            if ((errors & SslPolicyErrors.RemoteCertificateNameMismatch) != 0) return false;
+            using var chain = new X509Chain();
+            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            chain.ChainPolicy.CustomTrustStore.Add(_ca);
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            return chain.Build(new X509Certificate2(cert));
+        };
+
+    public void Dispose() => _ca.Dispose();
 }

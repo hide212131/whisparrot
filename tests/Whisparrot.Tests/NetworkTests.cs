@@ -1,4 +1,6 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Whisparrot.Core.Settings;
 using Whisparrot.Infrastructure.Network;
@@ -89,18 +91,24 @@ public sealed class ProxyRuleTests
     [InlineData("http://proxy.local:3128/", "proxy.local:3128", null)]
     [InlineData("http://user:p%40ss@proxy.local:3128", "proxy.local:3128", "user:p@ss")]
     [InlineData("http://user@proxy.local:3128", "proxy.local:3128", "user:")]
+    [InlineData("https://proxy.local:3128", "proxy.local:3128", null)]
+    [InlineData("https://proxy.local", "proxy.local:443", null)]
+    [InlineData("https://user:p%40ss@proxy.local:8443/", "proxy.local:8443", "user:p@ss")]
     public void Proxy_url_is_normalized_and_userinfo_is_split_into_a_credential(string raw, string hostPort, string? cred)
     {
         var t = ProxyTarget.Parse(raw, "test");
         Assert.Equal(hostPort, t.HostPort);
         Assert.DoesNotContain("@", t.Uri.ToString());
+        Assert.Equal(raw.StartsWith("https://") ? "https" : "http", t.Uri.Scheme);
         Assert.Equal(cred, t.Credential is null ? null : $"{t.Credential.UserName}:{t.Credential.Password}");
     }
 
     [Theory]
-    [InlineData("https://proxy.local:3128")]
     [InlineData("socks5://proxy.local:1080")]
     [InlineData("http://proxy.local:3128/path")]
+    [InlineData("https://proxy.local:3128/path")]
+    [InlineData("https://proxy.local:3128?x=1")]
+    [InlineData("ftp://proxy.local:3128")]
     [InlineData("http://proxy.local:3128?x=1")]
     [InlineData("http://proxy .local:3128")]
     [InlineData("http://:3128")]
@@ -292,6 +300,151 @@ public sealed class NetworkIntegrationTests : IDisposable
         await Assert.ThrowsAsync<HttpRequestException>(() => GetString(net, "https://models.test/file"));
         cfg = new ProxyConfig(ProxyMode.Manual, proxy.Url, "", null);
         Assert.Equal("200:hello", await GetString(net, "https://models.test/file"));
+    }
+
+    // ---- HTTPS プロキシ（プロキシ自体への接続を TLS で行う）。信頼はテスト用 CA だけ。ホスト名の検証は実物と同じ ----
+
+    private TestCa Ca() => Track(new TestCa());
+
+    private TestConnectProxy TlsProxy(TestCa ca, TestTlsServer? server, string? auth = null, string? dns = null, IPAddress? ip = null, X509Certificate2? cert = null, params string[] hosts)
+    {
+        var p = Track(new TestConnectProxy(auth, cert ?? Track(ca.Issue(dns, ip ?? IPAddress.Loopback))));
+        if (server is not null) foreach (var h in hosts) p.Map[h] = server.Port;
+        return p;
+    }
+
+    private static NetworkContext CaCtx(TestCa ca, TestTlsServer server, ProxyConfig cfg, ProxyEnvironment env) =>
+        new(() => cfg, env, ca.Trust(server));
+
+    [Fact]
+    public async Task Https_proxy_in_manual_mode_reaches_the_target_over_tls()
+    {
+        var ca = Ca(); var server = Server();
+        var proxy = TlsProxy(ca, server, hosts: "models.test");
+        Assert.StartsWith("https://", proxy.Url);
+        var net = CaCtx(ca, server, new ProxyConfig(ProxyMode.Manual, proxy.Url, "", null), ProxyEnvironment.Empty);
+
+        Assert.Equal("200:hello", await GetString(net, "https://models.test/file"));
+        Assert.Equal(("models.test", 443), (proxy.Tunnelled.Single().Host, proxy.Tunnelled.Single().Port));
+        Assert.Equal(0, proxy.TlsHandshakeFailures);
+        Assert.True(net.Describe(new Uri("https://models.test/")).ViaProxy);
+    }
+
+    [Fact]
+    public async Task Https_proxy_in_environment_mode_reaches_the_target_over_tls()
+    {
+        var ca = Ca(); var server = Server();
+        var proxy = TlsProxy(ca, server, hosts: "models.test");
+        var net = CaCtx(ca, server, ProxyConfig.Environment, EnvWith(proxy.Url));
+        Assert.Equal("200:hello", await GetString(net, "https://models.test/file"));
+        Assert.Single(proxy.Tunnelled);
+    }
+
+    [Fact]
+    public async Task Https_proxy_serves_the_cleanup_path_too()
+    {
+        var ca = Ca(); var server = Server(_ => new TestResponse(200, Encoding.ASCII.GetBytes("polished")));
+        var proxy = TlsProxy(ca, server, hosts: "api.test");
+        var net = CaCtx(ca, server, new ProxyConfig(ProxyMode.Manual, proxy.Url, "", null), ProxyEnvironment.Empty);
+        using var client = net.CreateClient(NetworkPurpose.Cleanup);
+        using var resp = await client.PostAsync("https://api.test/v1/chat/completions", new StringContent("{}"));
+        Assert.Equal("polished", await resp.Content.ReadAsStringAsync());
+        Assert.Single(proxy.Tunnelled);
+    }
+
+    [Fact]
+    public async Task Https_proxy_with_correct_credentials_succeeds_and_sends_them_only_inside_tls()
+    {
+        var ca = Ca(); var server = Server();
+        var proxy = TlsProxy(ca, server, "alice:s3cret", hosts: "models.test");
+        var net = CaCtx(ca, server, new ProxyConfig(ProxyMode.Manual, proxy.Url, "alice", "s3cret"), ProxyEnvironment.Empty);
+        Assert.Equal("200:hello", await GetString(net, "https://models.test/file"));
+        // フィクスチャーは TLS を終端した後の平文を見ている。Basic はその内側（CONNECT のヘッダー）にだけ現れる。
+        Assert.Contains(proxy.Connects, c => c.ProxyAuthorization == "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes("alice:s3cret")));
+    }
+
+    [Fact]
+    public async Task Https_proxy_with_wrong_credentials_fails_and_never_reaches_the_target()
+    {
+        var ca = Ca(); var server = Server();
+        var proxy = TlsProxy(ca, server, "alice:s3cret", hosts: "models.test");
+        var net = CaCtx(ca, server, new ProxyConfig(ProxyMode.Manual, proxy.Url, "alice", "wrong"), ProxyEnvironment.Empty);
+        await Assert.ThrowsAsync<HttpRequestException>(() => GetString(net, "https://models.test/file"));
+        Assert.Empty(server.Requests);
+        Assert.True(proxy.AuthFailures > 0);
+    }
+
+    [Fact]
+    public async Task Https_proxy_credentials_are_never_sent_when_the_certificate_is_untrusted()
+    {
+        var ca = Ca(); var other = Ca(); var server = Server();
+        var proxy = TlsProxy(ca, server, "alice:s3cret", cert: other.Issue(null, IPAddress.Loopback), hosts: "models.test");
+        var net = CaCtx(ca, server, new ProxyConfig(ProxyMode.Manual, proxy.Url, "alice", "s3cret"), ProxyEnvironment.Empty);
+        await Assert.ThrowsAsync<HttpRequestException>(() => GetString(net, "https://models.test/file"));
+        Assert.Empty(proxy.Connects);
+        Assert.Empty(server.Requests);
+    }
+
+    [Fact]
+    public async Task Https_proxy_with_a_self_signed_certificate_not_from_the_test_ca_is_an_error_not_a_direct_fallback()
+    {
+        var ca = Ca(); var server = Server();
+        using var rsa = System.Security.Cryptography.RSA.Create(2048);
+        var req = new CertificateRequest("CN=rogue", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var san = new SubjectAlternativeNameBuilder(); san.AddIpAddress(IPAddress.Loopback);
+        req.CertificateExtensions.Add(san.Build());
+        using var self = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        var rogue = Track(new X509Certificate2(self.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.Exportable));
+        var proxy = TlsProxy(ca, server, cert: rogue, hosts: "models.test");
+        var net = CaCtx(ca, server, new ProxyConfig(ProxyMode.Manual, proxy.Url, "", null), ProxyEnvironment.Empty);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => GetString(net, "https://models.test/file"));
+        Assert.Empty(proxy.Connects);
+        Assert.Empty(server.Requests);
+    }
+
+    [Fact]
+    public async Task Https_proxy_certificate_for_a_different_host_name_is_an_error()
+    {
+        var ca = Ca(); var server = Server();
+        // CA 署名だが SAN は別名だけ（127.0.0.1 を含まない）
+        var proxy = TlsProxy(ca, server, dns: "elsewhere.test", ip: IPAddress.IPv6Loopback, hosts: "models.test");
+        var net = CaCtx(ca, server, new ProxyConfig(ProxyMode.Manual, proxy.Url, "", null), ProxyEnvironment.Empty);
+        await Assert.ThrowsAsync<HttpRequestException>(() => GetString(net, "https://models.test/file"));
+        Assert.Empty(proxy.Connects);
+        Assert.Empty(server.Requests);
+    }
+
+    [Fact]
+    public async Task Https_proxy_without_test_trust_is_rejected_by_the_default_validation()
+    {
+        var ca = Ca(); var server = Server();
+        var proxy = TlsProxy(ca, server, hosts: "models.test");
+        var net = new NetworkContext(() => new ProxyConfig(ProxyMode.Manual, proxy.Url, "", null), ProxyEnvironment.Empty);
+        await Assert.ThrowsAsync<HttpRequestException>(() => GetString(net, "https://models.test/file"));
+        Assert.Empty(proxy.Connects);
+    }
+
+    [Fact]
+    public async Task Unreachable_https_proxy_is_a_connection_error_not_a_direct_fallback()
+    {
+        var ca = Ca(); var server = Server();
+        var closed = TlsProxy(ca, null); closed.Dispose();
+        var net = CaCtx(ca, server, new ProxyConfig(ProxyMode.Manual, closed.Url, "", null), ProxyEnvironment.Empty);
+        await Assert.ThrowsAsync<HttpRequestException>(() => GetString(net, "https://models.test/file"));
+        Assert.Empty(server.Requests);
+    }
+
+    [Fact]
+    public async Task Https_proxy_does_not_change_loopback_and_no_proxy_rules()
+    {
+        var ca = Ca(); var server = Server();
+        var proxy = TlsProxy(ca, server, hosts: "127.0.0.1");
+        var net = CaCtx(ca, server, ProxyConfig.Environment, EnvWith(proxy.Url));
+        Assert.Equal("200:hello", await GetString(net, $"https://127.0.0.1:{server.Port}/x"));
+        Assert.Empty(proxy.Connects);
+        var net2 = CaCtx(ca, server, ProxyConfig.Environment, EnvWith(proxy.Url, "models.test"));
+        Assert.False(net2.Describe(new Uri("https://models.test/")).ViaProxy);
     }
 
     [Fact]

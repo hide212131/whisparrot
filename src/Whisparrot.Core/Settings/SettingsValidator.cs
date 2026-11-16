@@ -42,15 +42,15 @@ public static class SettingsValidator
     }
 }
 
-/// <summary>プロキシ URL の形式規則（設計 §8.1 / §9.1）。HTTP プロキシ（http://host[:port]）だけを受け付ける。</summary>
+/// <summary>プロキシ URL の形式規則（設計 §8.1 / §9.1）。HTTP プロキシ（http://host[:port]）と HTTPS プロキシ（https://host[:port]。プロキシ自体への接続を TLS で行う）を受け付ける。</summary>
 public static class ProxyUrlRules
 {
     public static string? Validate(string text, bool allowUserInfo)
     {
         if (text.Length == 0) return "プロキシ URL が空です";
         if (text.Any(c => char.IsControl(c) || char.IsWhiteSpace(c))) return "空白・制御文字は使えません";
-        if (!Uri.TryCreate(text, UriKind.Absolute, out var u)) return "http://host:port の形式で指定してください";
-        if (u.Scheme != Uri.UriSchemeHttp) return $"{u.Scheme}:// のプロキシには対応していません（http:// のみ。HTTPS プロキシは未検証のため受け付けません）";
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var u)) return "http://host:port または https://host:port の形式で指定してください";
+        if (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps) return $"{u.Scheme}:// のプロキシには対応していません（http:// または https:// のみ）";
         if (u.Host.Length == 0) return "ホストがありません";
         if (!allowUserInfo && (u.UserInfo.Length > 0 || text.Split("://", 2)[1].Split('/')[0].Contains('@')))
             return "URL に認証情報は含められません（ユーザー名・パスワード欄に入力してください）";

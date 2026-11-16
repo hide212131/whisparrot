@@ -176,7 +176,7 @@ internal sealed class SettingsWindow : Window
         lines.AddRange(_network.Environment.Conflicts);
         return Group("通信", _pxEnv, new TextBlock { Text = string.Join("\n", lines), Foreground = System.Windows.Media.Brushes.DimGray, Margin = new Thickness(20, 0, 0, 4) },
             _pxManual, Row("URL", _pxUrl), Row("ユーザー名", _pxUser), Row("パスワード", _pxPass), _clearPxPass, _pxNone,
-            new TextBlock { Text = "手動指定は http://host:port の形式（HTTPS プロキシは未対応）。", Foreground = System.Windows.Media.Brushes.DimGray });
+            new TextBlock { Text = "手動指定は http://host:port または https://host:port の形式（https:// はプロキシへの接続を TLS で行い、証明書は OS の信頼ストアで検証します）。", Foreground = System.Windows.Media.Brushes.DimGray });
     }
 
     private UIElement BuildStartup() => Group("起動・更新", _autostartBox,
