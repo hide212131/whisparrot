@@ -307,7 +307,7 @@ public sealed class CompatiblePolisherTests : IDisposable
     public async Task An_unusable_proxy_configuration_falls_back_and_never_goes_direct()
     {
         var server = Server();
-        var net = new NetworkContext(() => new ProxyConfig(ProxyMode.Manual, "https://proxy.invalid:1", "", null), ProxyEnvironment.Empty);
+        var net = new NetworkContext(() => new ProxyConfig(ProxyMode.Manual, "socks5://proxy.invalid:1", "", null), ProxyEnvironment.Empty);
         var r = await Polisher(server.BaseUrl, net: net).PolishAsync(Raw, CancellationToken.None);
         Assert.Equal(PolishFailure.Network, r.Failure);
         Assert.Empty(server.Requests);
