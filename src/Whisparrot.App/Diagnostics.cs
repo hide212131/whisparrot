@@ -62,9 +62,18 @@ internal static partial class Diagnostics
         return 0;
     }
 
-    /// <summary>--clipboard-probe: クリップボードの退避/復元の往復を、複数形式で確認する（貼り付けは送らない）。</summary>
-    public static int ClipboardProbe()
+    /// <summary>
+    /// --clipboard-probe: クリップボードの退避/復元の往復を、複数形式で確認する（貼り付けは送らない）。
+    /// --clipboard-probe --current: 今のクリップボードで退避できる形式数と、飛ばされる形式 ID を出す（変更しない）。
+    /// </summary>
+    public static int ClipboardProbe(string[] args)
     {
+        if (args.Contains("--current"))
+        {
+            var c = Whisparrot.App.Windows.TextInjector.ClipboardInspectProbe();
+            Console.WriteLine(c);
+            return c.StartsWith("FAIL") ? 1 : 0;
+        }
         var r = Whisparrot.App.Windows.TextInjector.ClipboardRoundTripProbe();
         Console.WriteLine(r);
         return r.Contains("all_original_formats_restored=True") && r.Contains("other_app_copy_preserved=True") ? 0 : 1;

@@ -19,7 +19,7 @@ internal static class Program
         if (args.Contains(WorkerHost.Flag)) return WorkerHost.Run(args, resources, AppInfo.Version);
 
         if (args.Length > 0 && args[0] == "--native-info") return Diagnostics.NativeInfo(resources);
-        if (args.Length > 0 && args[0] == "--clipboard-probe") return Diagnostics.ClipboardProbe();
+        if (args.Length > 0 && args[0] == "--clipboard-probe") return Diagnostics.ClipboardProbe(args);
         if (args.Length > 0 && args[0] == "--pill-probe") return Diagnostics.PillProbe();
         if (args.Length > 0 && args[0] == "--record-probe") return Diagnostics.RecordProbe(args);
         if (args.Length > 0 && args[0] == "--settings-probe") return Diagnostics.SettingsProbe(args);

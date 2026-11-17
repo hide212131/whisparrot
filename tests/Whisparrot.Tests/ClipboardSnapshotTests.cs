@@ -78,7 +78,8 @@ public sealed class ClipboardSnapshotTests
         var delayed = Win32.RegisterClipboardFormatW("Whisparrot.Test.Delayed");
         using var owner = new DelayedRenderOwner(ThreeFormats(), delayedFormats: [delayed, 0xC0DE]);
         string? seenAtPaste = null;
-        var r = TextInjector.InjectClipboard("投入テキスト", () => { seenAtPaste = Win32.ReadUnicodeText(); return true; });
+        IReadOnlyList<TextInjector.SkippedFormat>? skipped = null;
+        var r = TextInjector.InjectClipboard("投入テキスト", () => { seenAtPaste = Win32.ReadUnicodeText(); return true; }, s => skipped = s);
 
         Assert.True(owner.RenderRequests >= 1, "scenario check: the owner was asked to render (GetClipboardData reached it)");
         Assert.True(r.Outcome == InjectOutcome.Success, r.Message);
@@ -86,6 +87,24 @@ public sealed class ClipboardSnapshotTests
         var after = Win32.ReadAll();
         AssertRestored(ThreeFormats(), after);
         Assert.False(after.ContainsKey(delayed)); // 取得できなかった形式は復元されない
+        Assert.NotNull(skipped);
+        Assert.Equal(
+            new[] { new TextInjector.SkippedFormat(delayed, TextInjector.SkipReason.NotRetrievable), new TextInjector.SkippedFormat(0xC0DE, TextInjector.SkipReason.NotRetrievable) }.OrderBy(x => x.Format),
+            skipped!.OrderBy(x => x.Format));
+        Assert.Equal($"{delayed}(not_retrievable),49374(not_retrievable)", TextInjector.FormatSkipped(skipped!.OrderBy(x => x.Format).ToList()));
+    }
+
+    [Fact]
+    public void FormatThatRendersOnSecondRequest_IsRetriedOnceAndRestored()
+    {
+        var late = Win32.RegisterClipboardFormatW("Whisparrot.Test.Late");
+        var lateBytes = Utf16("遅れて描画");
+        using var owner = new DelayedRenderOwner(ThreeFormats(), delayedFormats: [late], renderOnSecondRequest: new() { [late] = lateBytes });
+        IReadOnlyList<TextInjector.SkippedFormat>? skipped = null;
+        var r = TextInjector.InjectClipboard("投入テキスト", () => true, s => skipped = s);
+        Assert.True(r.Outcome == InjectOutcome.Success, r.Message);
+        Assert.Null(skipped);
+        AssertRestored([.. ThreeFormats(), (late, lateBytes)], Win32.ReadAll());
     }
 
     [Fact]
@@ -93,8 +112,10 @@ public sealed class ClipboardSnapshotTests
     {
         var hbm = Win32.CreateBitmap(2, 2, 1, 32, IntPtr.Zero);
         Win32.SetHandle(CF_BITMAP, hbm);
-        var r = TextInjector.InjectClipboard("投入テキスト", () => true);
+        IReadOnlyList<TextInjector.SkippedFormat>? skipped = null;
+        var r = TextInjector.InjectClipboard("投入テキスト", () => true, s => skipped = s);
         Assert.True(r.Outcome == InjectOutcome.Success, r.Message);
+        Assert.Null(skipped); // CF_BITMAP は DIB からの読み替えで、飛ばした形式ではない
         // CF_DIB は OS が合成し、退避・復元の対象。CF_BITMAP は復元後に OS が再合成する。
         Assert.True(Win32.IsClipboardFormatAvailable(CF_BITMAP));
         Assert.True(Win32.IsClipboardFormatAvailable(8 /* CF_DIB */));
@@ -105,9 +126,13 @@ public sealed class ClipboardSnapshotTests
     {
         var text = (CF_UNICODETEXT, Utf16("元のテキスト"));
         Win32.Set([text], enhMetafile: Win32.MakeEnhMetafile());
-        var r = TextInjector.InjectClipboard("投入テキスト", () => true);
+        IReadOnlyList<TextInjector.SkippedFormat>? skipped = null;
+        var r = TextInjector.InjectClipboard("投入テキスト", () => true, s => skipped = s);
         Assert.True(r.Outcome == InjectOutcome.Success, r.Message);
         AssertRestored([text], Win32.ReadAll());
+        Assert.NotNull(skipped);
+        Assert.Contains(skipped!, x => x.Format == CF_ENHMETAFILE && x.Reason == TextInjector.SkipReason.GdiHandle);
+        Assert.Contains("14:CF_ENHMETAFILE(gdi_handle)", TextInjector.FormatSkipped(skipped!));
     }
 }
 
@@ -239,8 +264,12 @@ internal sealed class DelayedRenderOwner : IDisposable
 
     public int RenderRequests => Volatile.Read(ref _renderRequests);
 
-    public DelayedRenderOwner((uint Format, byte[] Data)[] realFormats, uint[] delayedFormats)
+    private readonly Dictionary<uint, byte[]>? _renderOnSecond;
+    private readonly Dictionary<uint, int> _requestsByFormat = new();
+
+    public DelayedRenderOwner((uint Format, byte[] Data)[] realFormats, uint[] delayedFormats, Dictionary<uint, byte[]>? renderOnSecondRequest = null)
     {
+        _renderOnSecond = renderOnSecondRequest;
         _proc = OnMessage;
         _thread = new Thread(() => Run(realFormats, delayedFormats)) { IsBackground = true, Name = "test-clipboard-owner" };
         _thread.SetApartmentState(ApartmentState.STA);
@@ -254,6 +283,12 @@ internal sealed class DelayedRenderOwner : IDisposable
         switch (msg)
         {
             case WM_RENDERFORMAT:
+                Interlocked.Increment(ref _renderRequests);
+                var f = (uint)(long)w;
+                _requestsByFormat[f] = _requestsByFormat.GetValueOrDefault(f) + 1;
+                // 要求側がクリップボードを開いているので、そのまま SetClipboardData で供給できる。
+                if (_renderOnSecond != null && _requestsByFormat[f] >= 2 && _renderOnSecond.TryGetValue(f, out var data)) Win32.SetGlobal(f, data);
+                return IntPtr.Zero;
             case WM_RENDERALLFORMATS:
                 Interlocked.Increment(ref _renderRequests);
                 return IntPtr.Zero; // 何も供給しない

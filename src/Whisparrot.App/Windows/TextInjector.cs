@@ -7,8 +7,9 @@ namespace Whisparrot.App.Windows;
 /// <summary>
 /// クリップボード方式の投入（設計 §10.1）。元の内容を退避 → テキスト設定 → Ctrl+V → 復元。
 /// Enter は送らない。クリップボードは STA の専用スレッドで扱う。
-/// M1 の範囲: 退避は HGLOBAL 形式（テキスト / HTML / RTF / HDROP 等）。GDI ハンドル形式
-/// （CF_ENHMETAFILE 等）で安全に複製できないものがあれば、元の内容を触らず投入を中止する。
+/// 退避は HGLOBAL 形式（テキスト / HTML / RTF / HDROP 等）を形式ごとに独立して行い、取得できない形式・
+/// バイト複製できない GDI ハンドル形式（CF_ENHMETAFILE 等）はその形式だけを飛ばす（飛ばした形式は復元されない）。
+/// 投入を中止するのは、クリップボードを開けないなど本当に進めない場合に限る。
 /// </summary>
 internal sealed class TextInjector : ITextInjector
 {
@@ -19,6 +20,34 @@ internal sealed class TextInjector : ITextInjector
 
     private const uint CF_BITMAP = 2, CF_METAFILEPICT = 3, CF_PALETTE = 9, CF_DIB = 8, CF_DIBV5 = 17, CF_ENHMETAFILE = 14;
     private const uint CF_TEXT = 1, CF_OEMTEXT = 7, CF_LOCALE = 16;
+
+    /// <summary>GetClipboardData が NULL のとき、1 回だけ再試行するまでの間隔（遅延描画の所有者の描画待ち）。</summary>
+    internal static readonly TimeSpan RenderRetryDelay = TimeSpan.FromMilliseconds(30);
+
+    internal enum SkipReason { NotRetrievable, NotDuplicable, GdiHandle }
+
+    /// <summary>退避できずに飛ばした形式。診断には形式 ID・（標準形式なら）名前・理由だけを出し、内容は出さない。</summary>
+    internal readonly record struct SkippedFormat(uint Format, SkipReason Reason)
+    {
+        public override string ToString()
+        {
+            var name = StandardName(Format);
+            var reason = Reason switch { SkipReason.NotRetrievable => "not_retrievable", SkipReason.NotDuplicable => "not_duplicable", _ => "gdi_handle" };
+            return name == null ? $"{Format}({reason})" : $"{Format}:{name}({reason})";
+        }
+    }
+
+    internal static string FormatSkipped(IReadOnlyCollection<SkippedFormat> skipped) =>
+        skipped.Count == 0 ? "none" : string.Join(",", skipped);
+
+    private static string? StandardName(uint f) => f switch
+    {
+        1 => "CF_TEXT", 2 => "CF_BITMAP", 3 => "CF_METAFILEPICT", 4 => "CF_SYLK", 5 => "CF_DIF", 6 => "CF_TIFF",
+        7 => "CF_OEMTEXT", 8 => "CF_DIB", 9 => "CF_PALETTE", 10 => "CF_PENDATA", 11 => "CF_RIFF", 12 => "CF_WAVE",
+        13 => "CF_UNICODETEXT", 14 => "CF_ENHMETAFILE", 15 => "CF_HDROP", 16 => "CF_LOCALE", 17 => "CF_DIBV5",
+        0x80 => "CF_OWNERDISPLAY", 0x81 => "CF_DSPTEXT", 0x82 => "CF_DSPBITMAP", 0x83 => "CF_DSPMETAFILEPICT", 0x8E => "CF_DSPENHMETAFILE",
+        _ => null,
+    };
 
     public Task<InjectResult> InjectAsync(string text, CancellationToken ct)
     {
@@ -45,17 +74,14 @@ internal sealed class TextInjector : ITextInjector
     /// 前景確認・修飾キー待ちの後の本体: 退避 → テキスト設定 → 貼り付け送信 → 復元。
     /// 貼り付けの送信を差し替えられるようにしてあり、テストはキー入力なしでクリップボード側だけを検証する。
     /// </summary>
-    internal static InjectResult InjectClipboard(string text, Func<bool> sendPaste)
+    internal static InjectResult InjectClipboard(string text, Func<bool> sendPaste, Action<IReadOnlyList<SkippedFormat>>? onSkipped = null)
     {
         if (!OpenClipboardRetry()) return Fail("クリップボードを開けませんでした");
         List<(uint Format, byte[] Data)> snapshot;
         try
         {
-            if (!TrySnapshot(out snapshot, out var why))
-            {
-                CloseClipboard();
-                return Fail(why);
-            }
+            snapshot = Snapshot(out var skipped);
+            if (skipped.Count > 0) onSkipped?.Invoke(skipped);
             EmptyClipboard();
             if (!SetText(text))
             {
@@ -123,7 +149,7 @@ internal sealed class TextInjector : ITextInjector
 
             // 1) 通常: 退避 → 設定 → （sequence 不変）→ 復元
             OpenClipboardRetry();
-            TrySnapshot(out var snap, out _);
+            var snap = Snapshot(out var skipped);
             EmptyClipboard();
             SetText("投入テキスト");
             CloseClipboard();
@@ -137,7 +163,7 @@ internal sealed class TextInjector : ITextInjector
 
             // 2) 別アプリがコピーした場合: sequence が変わるので復元しない
             OpenClipboardRetry();
-            TrySnapshot(out var snap2, out _);
+            var snap2 = Snapshot(out _);
             EmptyClipboard();
             SetText("投入テキスト");
             CloseClipboard();
@@ -150,17 +176,39 @@ internal sealed class TextInjector : ITextInjector
             var after = ReadAll();
             var kept = after.Any(r => r.Format == CF_UNICODETEXT && System.Text.Encoding.Unicode.GetString(r.Data).StartsWith("他アプリのコピー"));
 
-            return $"snapshot_formats={snap.Count} all_original_formats_restored={same} other_app_copy_preserved={kept}";
+            return $"snapshot_formats={snap.Count} all_original_formats_restored={same} other_app_copy_preserved={kept} skipped_formats={FormatSkipped(skipped)}";
         }
 
         static List<(uint Format, byte[] Data)> ReadAll()
         {
-            var list = new List<(uint, byte[])>();
             OpenClipboardRetry();
-            TrySnapshot(out list, out _);
+            var list = Snapshot(out _);
             CloseClipboard();
             return list;
         }
+    }
+
+    /// <summary>
+    /// 診断用: 今のクリップボードを退避するとしたら、何形式が退避でき、どの形式が飛ばされるかを出す。
+    /// クリップボードは変更しない。出力は形式 ID・名前・理由と件数だけで、内容は出さない。
+    /// </summary>
+    internal static string ClipboardInspectProbe()
+    {
+        string result = "no result";
+        var thread = new Thread(() =>
+        {
+            if (!OpenClipboardRetry()) { result = "FAIL: cannot open clipboard (non-interactive window station?)"; return; }
+            try
+            {
+                var snap = Snapshot(out var skipped);
+                result = $"snapshot_formats={snap.Count} skipped_formats={FormatSkipped(skipped)}";
+            }
+            finally { CloseClipboard(); }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        return result;
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -199,10 +247,14 @@ internal sealed class TextInjector : ITextInjector
         }
     }
 
-    private static bool TrySnapshot(out List<(uint Format, byte[] Data)> snapshot, out string reason)
+    /// <summary>
+    /// 形式ごとに独立して退避する。取得できない形式・複製できない形式は、その形式だけを飛ばして続行する
+    /// （遅延描画の所有者が描画しない・終了している等は実環境で普通に起こる）。飛ばした形式は skipped に入る。
+    /// </summary>
+    private static List<(uint Format, byte[] Data)> Snapshot(out List<SkippedFormat> skipped)
     {
-        snapshot = [];
-        reason = "";
+        var snapshot = new List<(uint Format, byte[] Data)>();
+        skipped = [];
         var formats = new List<uint>();
         for (var f = EnumClipboardFormats(0); f != 0; f = EnumClipboardFormats(f)) formats.Add(f);
         var hasDib = formats.Contains(CF_DIB) || formats.Contains(CF_DIBV5);
@@ -214,28 +266,44 @@ internal sealed class TextInjector : ITextInjector
             if ((f == CF_BITMAP && hasDib) || ((f == CF_TEXT || f == CF_OEMTEXT || f == CF_LOCALE) && hasUnicode)) continue;
             if (f == CF_BITMAP || f == CF_METAFILEPICT || f == CF_PALETTE || f == CF_ENHMETAFILE || (f >= 0x80 && f <= 0x8F))
             {
-                reason = "クリップボードの内容を安全に退避できないため、入力を中止しました";
-                return false;
+                skipped.Add(new SkippedFormat(f, SkipReason.GdiHandle));
+                continue;
             }
             var h = GetClipboardData(f);
             if (h == IntPtr.Zero)
             {
-                reason = "クリップボードの内容を取得できないため、入力を中止しました";
-                return false;
+                Thread.Sleep(RenderRetryDelay);
+                h = GetClipboardData(f);
             }
-            var size = (long)GlobalSize(h);
-            var p = GlobalLock(h);
-            if (size <= 0 || p == IntPtr.Zero)
+            if (h == IntPtr.Zero)
             {
-                reason = "クリップボードの内容を複製できないため、入力を中止しました";
-                return false;
+                skipped.Add(new SkippedFormat(f, SkipReason.NotRetrievable));
+                continue;
             }
-            var bytes = new byte[size];
-            Marshal.Copy(p, bytes, 0, (int)size);
-            GlobalUnlock(h);
+            var bytes = CopyGlobal(h);
+            if (bytes == null)
+            {
+                skipped.Add(new SkippedFormat(f, SkipReason.NotDuplicable));
+                continue;
+            }
             snapshot.Add((f, bytes));
         }
-        return true;
+        return snapshot;
+    }
+
+    private static byte[]? CopyGlobal(IntPtr h)
+    {
+        var size = (long)GlobalSize(h);
+        if (size <= 0 || size > int.MaxValue) return null;
+        var p = GlobalLock(h);
+        if (p == IntPtr.Zero) return null;
+        try
+        {
+            var bytes = new byte[size];
+            Marshal.Copy(p, bytes, 0, (int)size);
+            return bytes;
+        }
+        finally { GlobalUnlock(h); }
     }
 
     private static bool SetText(string text)
