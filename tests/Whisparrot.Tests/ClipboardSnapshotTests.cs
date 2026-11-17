@@ -109,6 +109,29 @@ public sealed class ClipboardSnapshotTests
     }
 
     [Fact]
+    public void GraceParameter_IsAccepted_AndTraceReportsSteps()
+    {
+        Win32.Set(ThreeFormats());
+        var trace = new List<string>();
+        var r = TextInjector.InjectClipboard("投入テキスト", () => true, grace: TimeSpan.Zero, trace: trace.Add);
+        Assert.True(r.Outcome == InjectOutcome.Success, r.Message);
+        Assert.Equal(["sequence_after_set", "paste_sent", "sequence_before_restore", "restored"], trace.Select(t => t[..t.IndexOf('=')]));
+        Assert.Contains("restored=True", trace);
+        Assert.DoesNotContain(trace, t => t.Contains("投入テキスト") || t.Contains("元のテキスト"));
+        AssertRestored(ThreeFormats(), Win32.ReadAll());
+    }
+
+    [Fact]
+    public void Trace_ReportsNotRestored_WhenAnotherCopyHappened()
+    {
+        Win32.Set(ThreeFormats());
+        var trace = new List<string>();
+        var r = TextInjector.InjectClipboard("投入テキスト", () => { Win32.Set([(CF_UNICODETEXT, Utf16("他アプリのコピー"))]); return true; }, grace: TimeSpan.Zero, trace: trace.Add);
+        Assert.True(r.Outcome == InjectOutcome.Success, r.Message);
+        Assert.Contains("restored=False", trace);
+    }
+
+    [Fact]
     public void BitmapOnlyClipboard_Succeeds_AndBitmapIsStillAvailable()
     {
         var hbm = Win32.CreateBitmap(2, 2, 1, 32, IntPtr.Zero);

@@ -79,6 +79,21 @@ internal static partial class Diagnostics
         return r.Contains("all_original_formats_restored=True") && r.Contains("other_app_copy_preserved=True") ? 0 : 1;
     }
 
+    /// <summary>
+    /// --inject-probe [--grace-ms N]: 5 秒のカウントダウン後、本番と同じ投入経路で固定文字列を前景アプリへ投入し、各ステップを出す。
+    /// </summary>
+    public static int InjectProbe(string[] args)
+    {
+        int? grace = null;
+        var i = Array.IndexOf(args, "--grace-ms");
+        if (i >= 0)
+        {
+            if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out var ms) || ms < 0) { Console.WriteLine("--grace-ms には 0 以上の整数が必要です"); return 2; }
+            grace = ms;
+        }
+        return Whisparrot.App.Windows.TextInjector.InjectProbe(grace, line => Console.WriteLine(line));
+    }
+
     /// <summary>--pill-probe: 非対話でもできる範囲でピルの生成・表示・スタイルを確認する（描画の目視はできない）。</summary>
     public static int PillProbe()
     {

@@ -15,8 +15,12 @@ internal sealed class TextInjector : ITextInjector
 {
     internal static readonly TimeSpan ModifierWait = TimeSpan.FromSeconds(1);
     internal static readonly TimeSpan ClipboardOpenWait = TimeSpan.FromSeconds(1);
-    /// <summary>貼り付け先が読み取る猶予。設計 §10.1 の初期値 300 ms（実機で 2 秒まで調整）。</summary>
-    internal static readonly TimeSpan PasteGrace = TimeSpan.FromMilliseconds(300);
+    /// <summary>
+    /// 貼り付け先が読み取る猶予。設計 §10.1 は初期値 300 ms・実機で 2 秒まで調整可。
+    /// 新しい Windows のメモ帳では貼り付け時のクリップボード読み取りが非同期で、300 ms では間に合わず
+    /// 復元後の内容を読まれる（または何も貼られない）事例があったため 1500 ms とした。
+    /// </summary>
+    internal static readonly TimeSpan PasteGrace = TimeSpan.FromMilliseconds(1500);
 
     private const uint CF_BITMAP = 2, CF_METAFILEPICT = 3, CF_PALETTE = 9, CF_DIB = 8, CF_DIBV5 = 17, CF_ENHMETAFILE = 14;
     private const uint CF_TEXT = 1, CF_OEMTEXT = 7, CF_LOCALE = 16;
@@ -74,7 +78,8 @@ internal sealed class TextInjector : ITextInjector
     /// 前景確認・修飾キー待ちの後の本体: 退避 → テキスト設定 → 貼り付け送信 → 復元。
     /// 貼り付けの送信を差し替えられるようにしてあり、テストはキー入力なしでクリップボード側だけを検証する。
     /// </summary>
-    internal static InjectResult InjectClipboard(string text, Func<bool> sendPaste, Action<IReadOnlyList<SkippedFormat>>? onSkipped = null)
+    internal static InjectResult InjectClipboard(string text, Func<bool> sendPaste, Action<IReadOnlyList<SkippedFormat>>? onSkipped = null,
+        TimeSpan? grace = null, Action<string>? trace = null)
     {
         if (!OpenClipboardRetry()) return Fail("クリップボードを開けませんでした");
         List<(uint Format, byte[] Data)> snapshot;
@@ -98,19 +103,25 @@ internal sealed class TextInjector : ITextInjector
         }
         CloseClipboard();
         var ourSequence = GetClipboardSequenceNumber();
+        trace?.Invoke($"sequence_after_set={ourSequence}");
 
         var sent = sendPaste();
-        Thread.Sleep(PasteGrace);
+        trace?.Invoke($"paste_sent={sent}");
+        Thread.Sleep(grace ?? PasteGrace);
 
         // 復元: 自分が設定してから変わっていなければ戻す。別のコピーがあればそちらを優先する。
         if (!OpenClipboardRetry()) return Fail("貼り付けましたが、クリップボードを復元できませんでした");
         try
         {
-            if (GetClipboardSequenceNumber() == ourSequence)
+            var seqBeforeRestore = GetClipboardSequenceNumber();
+            var unchanged = seqBeforeRestore == ourSequence;
+            trace?.Invoke($"sequence_before_restore={seqBeforeRestore} unchanged={unchanged}");
+            if (unchanged)
             {
                 EmptyClipboard();
                 Restore(snapshot);
             }
+            trace?.Invoke($"restored={unchanged}");
         }
         finally
         {
@@ -210,6 +221,57 @@ internal sealed class TextInjector : ITextInjector
         thread.Join();
         return result;
     }
+
+    internal const string ProbeText = "whisparrot-inject-probe-12345";
+
+    /// <summary>
+    /// 診断用: 5 秒のカウントダウンの間に対象アプリへフォーカスを移してもらい、本番と同じ InjectClipboard 経路で
+    /// 固定文字列を投入して各ステップを出力する。出すのは前景のプロセス名とクラス名（タイトルは出さない）、
+    /// sequence 番号、成否、長さだけで、クリップボードの内容は出さない。
+    /// </summary>
+    internal static int InjectProbe(int? graceMs, Action<string> write)
+    {
+        var grace = graceMs is { } g ? TimeSpan.FromMilliseconds(g) : PasteGrace;
+        write($"grace_ms={(int)grace.TotalMilliseconds}");
+        for (var i = 5; i >= 1; i--)
+        {
+            write($"countdown={i} (focus the target app now)");
+            Thread.Sleep(1000);
+        }
+        var exit = 1;
+        var thread = new Thread(() =>
+        {
+            write($"foreground={DescribeForeground()}");
+            var external = ForegroundIsExternal();
+            write($"foreground_external={external}");
+            if (!external) { write("result=Failed 入力先のウィンドウが見つかりません"); return; }
+            if (!WaitModifiersReleased()) { write("result=Failed 修飾キーが押されたままです"); return; }
+            write($"inject_text_length={ProbeText.Length}");
+            var r = InjectClipboard(ProbeText, SendCtrlV, s => write($"skipped_formats={FormatSkipped(s)}"), grace, write);
+            write($"result={r.Outcome}{(r.Message is { } m ? " " + m : "")}");
+            if (r.Outcome == InjectOutcome.Success) exit = 0;
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+        return exit;
+    }
+
+    private static string DescribeForeground()
+    {
+        var hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero) return "none";
+        GetWindowThreadProcessId(hwnd, out var pid);
+        string process;
+        try { process = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; }
+        catch { process = "unknown"; }
+        var cls = new System.Text.StringBuilder(256);
+        GetClassNameW(hwnd, cls, cls.Capacity);
+        return $"process={process} class={cls}";
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hWnd, System.Text.StringBuilder name, int maxCount);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern uint RegisterClipboardFormatW(string name);
