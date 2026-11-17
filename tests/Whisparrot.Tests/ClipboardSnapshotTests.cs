@@ -91,7 +91,8 @@ public sealed class ClipboardSnapshotTests
         Assert.Equal(
             new[] { new TextInjector.SkippedFormat(delayed, TextInjector.SkipReason.NotRetrievable), new TextInjector.SkippedFormat(0xC0DE, TextInjector.SkipReason.NotRetrievable) }.OrderBy(x => x.Format),
             skipped!.OrderBy(x => x.Format));
-        Assert.Equal($"{delayed}(not_retrievable),49374(not_retrievable)", TextInjector.FormatSkipped(skipped!.OrderBy(x => x.Format).ToList()));
+        var ids = new[] { delayed, 0xC0DEu }.Order().ToList();
+        Assert.Equal($"{ids[0]}(not_retrievable),{ids[1]}(not_retrievable)", TextInjector.FormatSkipped(skipped!.OrderBy(x => x.Format).ToList()));
     }
 
     [Fact]
