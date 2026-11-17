@@ -14,4 +14,9 @@
     <ProjectReference Include="..\..\src\Whisparrot.Core\Whisparrot.Core.csproj" />
     <ProjectReference Include="..\..\src\Whisparrot.Infrastructure\Whisparrot.Infrastructure.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- クリップボード退避/復元の実測テスト用。App 本体（self-contained exe）は参照せず、必要な 2 ファイルだけを取り込む。 -->
+    <Compile Include="..\..\src\Whisparrot.App\Windows\TextInjector.cs" Link="App\TextInjector.cs" />
+    <Compile Include="..\..\src\Whisparrot.App\Windows\NativeMethods.cs" Link="App\NativeMethods.cs" />
+  </ItemGroup>
 </Project>

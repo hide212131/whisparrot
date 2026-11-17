@@ -38,6 +38,15 @@ internal sealed class TextInjector : ITextInjector
         if (!ForegroundIsExternal()) return Fail("入力先のウィンドウが見つかりません");
         if (!WaitModifiersReleased()) return Fail("修飾キーが押されたままです");
 
+        return InjectClipboard(text, SendCtrlV);
+    }
+
+    /// <summary>
+    /// 前景確認・修飾キー待ちの後の本体: 退避 → テキスト設定 → 貼り付け送信 → 復元。
+    /// 貼り付けの送信を差し替えられるようにしてあり、テストはキー入力なしでクリップボード側だけを検証する。
+    /// </summary>
+    internal static InjectResult InjectClipboard(string text, Func<bool> sendPaste)
+    {
         if (!OpenClipboardRetry()) return Fail("クリップボードを開けませんでした");
         List<(uint Format, byte[] Data)> snapshot;
         try
@@ -64,7 +73,7 @@ internal sealed class TextInjector : ITextInjector
         CloseClipboard();
         var ourSequence = GetClipboardSequenceNumber();
 
-        var sent = SendCtrlV();
+        var sent = sendPaste();
         Thread.Sleep(PasteGrace);
 
         // 復元: 自分が設定してから変わっていなければ戻す。別のコピーがあればそちらを優先する。
