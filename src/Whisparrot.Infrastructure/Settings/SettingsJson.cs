@@ -99,7 +99,11 @@ public static class SettingsJson
                 {
                     ["environment"] = ProxyMode.Environment, ["manual"] = ProxyMode.Manual, ["none"] = ProxyMode.None,
                 }),
-                px.String("manual_url", ""), px.String("manual_username", ""), px.NullableString("manual_password_dpapi", null));
+                px.String("manual_url", ""), px.String("manual_username", ""), px.NullableString("manual_password_dpapi", null),
+                px.Enum("manual_auth", d.Proxy.ManualAuth, new Dictionary<string, ProxyManualAuth>
+                {
+                    ["credentials"] = ProxyManualAuth.Credentials, ["windows"] = ProxyManualAuth.Windows,
+                }));
             px.Finish();
 
             var autostart = r.Bool("autostart", d.Autostart);
@@ -183,6 +187,8 @@ public static class SettingsJson
             w.WriteString("manual_url", s.Proxy.ManualUrl);
             w.WriteString("manual_username", s.Proxy.ManualUsername);
             WriteNullable(w, "manual_password_dpapi", s.Proxy.ManualPasswordDpapi);
+            // 既定（credentials）のときは書かない: 利用者が選ばない限り、この版が書く config.json に新しいキーを増やさない（旧版が未知キーとして拒否しないため）。
+            if (s.Proxy.ManualAuth != ProxyManualAuth.Credentials) w.WriteString("manual_auth", "windows");
             w.WriteEndObject();
             w.WriteBoolean("autostart", s.Autostart);
             w.WriteStartObject("insertion");

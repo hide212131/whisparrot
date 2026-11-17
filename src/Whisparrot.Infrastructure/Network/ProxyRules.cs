@@ -9,9 +9,18 @@ public sealed class NetworkConfigurationException(string message) : Exception(me
 /// <summary>ポリシー違反（HTTPS 以外、許可外ホストへのリダイレクト、ホップ超過など）。</summary>
 public sealed class NetworkPolicyException(string message) : Exception(message);
 
+/// <summary>プロキシ認証の資格情報ソースの種別（診断用。資格情報の中身は含めない）。</summary>
+public enum ProxyAuthKind { None, Credentials, WindowsLogon }
+
 /// <summary>正規化したプロキシの指定（認証情報は URL から分離済み）。</summary>
 public sealed record ProxyTarget(Uri Uri, NetworkCredential? Credential)
 {
+    /// <summary>OS のログオン資格情報（<see cref="CredentialCache.DefaultNetworkCredentials"/>）。NTLM / Negotiate のチャレンジにだけ使われ、値は取り出せない。</summary>
+    public static NetworkCredential WindowsLogon => CredentialCache.DefaultNetworkCredentials;
+
+    public ProxyAuthKind AuthKind => Credential is null ? ProxyAuthKind.None
+        : ReferenceEquals(Credential, WindowsLogon) ? ProxyAuthKind.WindowsLogon : ProxyAuthKind.Credentials;
+
     /// <summary>表示用（認証情報を含めない）。</summary>
     public string HostPort => $"{Uri.Host}:{Uri.Port}";
 
@@ -172,6 +181,8 @@ public sealed class NoProxyList
 /// <summary>経路規則を一か所にまとめた <see cref="IWebProxy"/>。loopback は常に直結。</summary>
 public sealed class RoutingProxy(ProxyTarget? proxy, NoProxyList noProxy) : IWebProxy
 {
+    public ProxyAuthKind AuthKind => proxy?.AuthKind ?? ProxyAuthKind.None;
+
     public ICredentials? Credentials { get => proxy?.Credential; set { } }
 
     public static bool IsLoopback(Uri u) =>

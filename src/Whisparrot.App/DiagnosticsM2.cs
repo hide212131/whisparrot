@@ -125,7 +125,7 @@ internal static partial class Diagnostics
         var manager = new ModelManager(dir, ModelCatalog.Embedded(), network);
         var entry = manager.Catalog.Get(id);
         Console.WriteLine($"model={id} url={entry.Url} size={entry.SizeBytes} sha256={entry.Sha256}");
-        Console.WriteLine($"route={(network.Describe(entry.Url) is { ViaProxy: true } r ? "proxy " + r.ProxyHostPort : "direct")}");
+        Console.WriteLine($"route={(network.Describe(entry.Url) is { ViaProxy: true } r ? "proxy " + r.ProxyHostPort + " auth=" + r.Auth : "direct")}");
         var sw = Stopwatch.StartNew();
         var last = -1;
         var progress = new Progress<DownloadProgress>(p =>

@@ -119,6 +119,9 @@ internal sealed class TestConnectProxy : IDisposable
 
     /// <summary>"user:password"（Basic）。null なら認証不要。</summary>
     public string? RequireBasic { get; }
+
+    /// <summary>統合認証（NTLM / Negotiate）のチャレンジを返すスクリプト。指定すると <see cref="RequireBasic"/> より先に適用する。</summary>
+    public IntegratedAuthScript? IntegratedAuth { get; init; }
     public int Port { get; }
     public Dictionary<string, int> Map { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<ConnectRecord> Connects { get; } = [];
@@ -152,6 +155,7 @@ internal sealed class TestConnectProxy : IDisposable
                     catch { lock (_lock) TlsHandshakeFailures++; return; }
                     stream = ssl;
                 }
+                var integrated = IntegratedAuth?.NewConnection();
                 while (true)
                 {
                     var head = await HttpText.ReadHead(stream, _cts.Token);
@@ -164,7 +168,19 @@ internal sealed class TestConnectProxy : IDisposable
                     req.Headers.TryGetValue("Proxy-Authorization", out var auth);
                     lock (_lock) Connects.Add(new ConnectRecord(host, port, auth));
 
-                    if (RequireBasic is not null && auth != "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(RequireBasic)))
+                    if (integrated is not null)
+                    {
+                        var step = integrated(auth);
+                        if (!step.Accept)
+                        {
+                            AuthFailures++;
+                            var challenge = string.Concat(step.Challenges.Select(c => $"Proxy-Authenticate: {c}\r\n"));
+                            await Write(stream, $"HTTP/1.1 407 Proxy Authentication Required\r\n{challenge}Content-Length: 0\r\n\r\n");
+                            if (step.Close) return;
+                            continue;
+                        }
+                    }
+                    else if (RequireBasic is not null && auth != "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(RequireBasic)))
                     {
                         AuthFailures++;
                         await Write(stream, "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"test\"\r\nContent-Length: 0\r\n\r\n");

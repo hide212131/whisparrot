@@ -49,6 +49,8 @@ internal sealed class SettingsWindow : Window
     private readonly RadioButton _pxEnv = new() { Content = "環境変数に従う", GroupName = "px" };
     private readonly RadioButton _pxManual = new() { Content = "手動指定", GroupName = "px" };
     private readonly RadioButton _pxNone = new() { Content = "使わない", GroupName = "px" };
+    private readonly RadioButton _pxAuthCred = new() { Content = "ユーザー名とパスワード", GroupName = "pxauth" };
+    private readonly RadioButton _pxAuthWindows = new() { Content = "Windows のログオン情報を使う", GroupName = "pxauth" };
     private readonly TextBox _pxUrl = new(), _pxUser = new();
     private readonly PasswordBox _pxPass = new();
     private readonly CheckBox _clearPxPass = new() { Content = "保存済みのパスワードを削除" };
@@ -169,13 +171,32 @@ internal sealed class SettingsWindow : Window
             new TextBlock { Text = "「互換エンドポイント」を選ぶと、認識したテキストだけをここで指定した送信先へ送って整文します（失敗・未設定・時間切れのときは認識結果をそのまま入力）。API キーは Windows のユーザー保護（DPAPI）で暗号化して保存します。ChatGPT 経由は未対応です。", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray });
     }
 
+    private UIElement AuthChoice()
+    {
+        var p = new StackPanel();
+        p.Children.Add(_pxAuthCred); p.Children.Add(_pxAuthWindows);
+        return p;
+    }
+
+    /// <summary>認証方式は排他。Windows のログオン情報を選んだらユーザー名・パスワード欄は使えない。</summary>
+    private void UpdateProxyAuthEnabled()
+    {
+        var creds = _pxAuthWindows.IsChecked != true;
+        _pxUser.IsEnabled = creds;
+        _pxPass.IsEnabled = creds;
+        _clearPxPass.IsEnabled = creds && _settings.Current.Proxy.ManualPasswordDpapi is not null;
+    }
+
     private UIElement BuildNetwork()
     {
         var env = _network.EnvironmentProxyDisplay();
         var lines = new List<string> { env is null ? "環境変数のプロキシ: なし（直結）" : $"環境変数のプロキシ: {env}" };
+        lines.Add("URL にユーザー名がなければ、Windows のログオン情報でプロキシの認証（NTLM / Negotiate）に応答します。");
         lines.AddRange(_network.Environment.Conflicts);
+        _pxAuthCred.Checked += (_, _) => UpdateProxyAuthEnabled();
+        _pxAuthWindows.Checked += (_, _) => UpdateProxyAuthEnabled();
         return Group("通信", _pxEnv, new TextBlock { Text = string.Join("\n", lines), Foreground = System.Windows.Media.Brushes.DimGray, Margin = new Thickness(20, 0, 0, 4) },
-            _pxManual, Row("URL", _pxUrl), Row("ユーザー名", _pxUser), Row("パスワード", _pxPass), _clearPxPass, _pxNone,
+            _pxManual, Row("URL", _pxUrl), Row("認証", AuthChoice()), Row("ユーザー名", _pxUser), Row("パスワード", _pxPass), _clearPxPass, _pxNone,
             new TextBlock { Text = "手動指定は http://host:port または https://host:port の形式（https:// はプロキシへの接続を TLS で行い、証明書は OS の信頼ストアで検証します）。", Foreground = System.Windows.Media.Brushes.DimGray });
     }
 
@@ -221,7 +242,9 @@ internal sealed class SettingsWindow : Window
         _pxNone.IsChecked = s.Proxy.Mode == ProxyMode.None;
         _pxUrl.Text = s.Proxy.ManualUrl;
         _pxUser.Text = s.Proxy.ManualUsername;
-        _clearPxPass.IsEnabled = s.Proxy.ManualPasswordDpapi is not null;
+        _pxAuthCred.IsChecked = s.Proxy.ManualAuth == ProxyManualAuth.Credentials;
+        _pxAuthWindows.IsChecked = s.Proxy.ManualAuth == ProxyManualAuth.Windows;
+        UpdateProxyAuthEnabled();
 
         _autostartBox.IsChecked = s.Autostart;
         _backend.Text = "実際の実行方式: " + (_backendText() ?? "未実行");
@@ -320,7 +343,8 @@ internal sealed class SettingsWindow : Window
                 Compatible = new CompatibleCleanupSettings(_baseUrl.Text.Trim(), apiKey, _cleanModel.Text.Trim()),
             },
             Proxy = new ProxySettings(_pxManual.IsChecked == true ? ProxyMode.Manual : _pxNone.IsChecked == true ? ProxyMode.None : ProxyMode.Environment,
-                _pxUrl.Text.Trim(), _pxUser.Text.Trim(), pxPass),
+                _pxUrl.Text.Trim(), _pxUser.Text.Trim(), pxPass,
+                _pxAuthWindows.IsChecked == true ? ProxyManualAuth.Windows : ProxyManualAuth.Credentials),
             Autostart = _autostartBox.IsChecked == true,
             Insertion = new InsertionSettings(InsertionMethod.Clipboard),
         };

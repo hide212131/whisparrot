@@ -4,6 +4,9 @@ public enum CleanupProvider { Off, Compatible, ChatGpt }
 
 public enum ProxyMode { Environment, Manual, None }
 
+/// <summary>手動プロキシの認証方式。<c>Windows</c> は OS のログオン資格情報（既定の資格情報）で NTLM / Negotiate に応答する。ユーザー名・パスワードとは排他。</summary>
+public enum ProxyManualAuth { Credentials, Windows }
+
 public enum InsertionMethod { Clipboard, SendInput }
 
 public static class ModelIds
@@ -25,7 +28,7 @@ public sealed record ChatGptCleanupSettings(string Model);
 
 public sealed record CleanupSettings(CleanupProvider Provider, int TimeoutSeconds, CompatibleCleanupSettings Compatible, ChatGptCleanupSettings ChatGpt);
 
-public sealed record ProxySettings(ProxyMode Mode, string ManualUrl, string ManualUsername, string? ManualPasswordDpapi);
+public sealed record ProxySettings(ProxyMode Mode, string ManualUrl, string ManualUsername, string? ManualPasswordDpapi, ProxyManualAuth ManualAuth = ProxyManualAuth.Credentials);
 
 public sealed record InsertionSettings(InsertionMethod Method);
 

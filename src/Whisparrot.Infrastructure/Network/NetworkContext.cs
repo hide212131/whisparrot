@@ -9,16 +9,16 @@ namespace Whisparrot.Infrastructure.Network;
 public enum NetworkPurpose { Cleanup, Update, ModelDownload }
 
 /// <summary>プロキシ設定の実効値（パスワードは復号済みの平文でメモリ上のみ）。</summary>
-public sealed record ProxyConfig(ProxyMode Mode, string ManualUrl, string ManualUsername, string? ManualPassword)
+public sealed record ProxyConfig(ProxyMode Mode, string ManualUrl, string ManualUsername, string? ManualPassword, ProxyManualAuth ManualAuth = ProxyManualAuth.Credentials)
 {
     public static ProxyConfig Environment { get; } = new(ProxyMode.Environment, "", "", null);
 
     public static ProxyConfig FromSettings(ProxySettings s, ISecretProtector protector)
     {
         string? password = null;
-        if (s.Mode == ProxyMode.Manual && !protector.TryUnprotect(s.ManualPasswordDpapi, out password))
+        if (s.Mode == ProxyMode.Manual && s.ManualAuth == ProxyManualAuth.Credentials && !protector.TryUnprotect(s.ManualPasswordDpapi, out password))
             throw new NetworkConfigurationException("手動プロキシのパスワードを復号できません。設定で再入力してください");
-        return new ProxyConfig(s.Mode, s.ManualUrl, s.ManualUsername, password);
+        return new ProxyConfig(s.Mode, s.ManualUrl, s.ManualUsername, password, s.ManualAuth);
     }
 }
 
@@ -35,7 +35,7 @@ public sealed record RedirectPolicy(Func<Uri, bool> IsHostAllowed, int MaxHops =
 }
 
 /// <summary>経路の説明（設定画面・診断用）。</summary>
-public sealed record RouteDescription(bool ViaProxy, string? ProxyHostPort);
+public sealed record RouteDescription(bool ViaProxy, string? ProxyHostPort, ProxyAuthKind Auth = ProxyAuthKind.None);
 
 /// <summary>
 /// 設計 §9.1 の共通生成口。経路はクライアント生成の時点の設定で決まる（設定変更は次の生成から効く。クライアントを使い回さないこと）。
@@ -65,7 +65,7 @@ public sealed class NetworkContext
         var (proxy, _, _) = Resolve();
         return proxy.IsBypassed(destination)
             ? new RouteDescription(false, null)
-            : new RouteDescription(true, new ProxyTarget(proxy.GetProxy(destination)!, null).HostPort);
+            : new RouteDescription(true, new ProxyTarget(proxy.GetProxy(destination)!, null).HostPort, proxy.AuthKind);
     }
 
     /// <summary>設定画面向け: 環境変数モードで効く（正規化後の）プロキシのホストだけ。</summary>
@@ -85,7 +85,10 @@ public sealed class NetworkContext
             case ProxyMode.Manual:
             {
                 var t = ProxyTarget.Parse(cfg.ManualUrl, "手動プロキシ");
-                if (cfg.ManualUsername.Length > 0)
+                // 認証方式は排他: Windows ならログオン資格情報だけ（ユーザー名・パスワードは使わない）。
+                if (cfg.ManualAuth == ProxyManualAuth.Windows)
+                    t = t with { Credential = ProxyTarget.WindowsLogon };
+                else if (cfg.ManualUsername.Length > 0)
                     t = t with { Credential = new NetworkCredential(cfg.ManualUsername, cfg.ManualPassword ?? "") };
                 // 手動: 環境変数を混ぜない。NO_PROXY は適用しない（loopback のみ直結）。
                 return (new RoutingProxy(t, NoProxyList.Empty), true, cfg);
@@ -94,6 +97,8 @@ public sealed class NetworkContext
             {
                 if (_environment.HttpsProxy is null) return (new RoutingProxy(null, NoProxyList.Empty), false, cfg);
                 var t = ProxyTarget.Parse(_environment.HttpsProxy, "HTTPS_PROXY");
+                // userinfo があればそれを優先。無ければ、ブラウザー・CLI と同じく OS のログオン資格情報で統合認証に応答する。
+                t = t with { Credential = t.Credential ?? ProxyTarget.WindowsLogon };
                 return (new RoutingProxy(t, new NoProxyList(_environment.NoProxy)), true, cfg);
             }
         }
