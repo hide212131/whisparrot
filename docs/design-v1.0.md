@@ -388,6 +388,7 @@ S-04 の結果に、(a) 同梱版 / arch ごとの exe 増分・必要設定・�
 | `proxy.manual_url` | string | `""`。manual 時は `http://host:port` または実装が検証済みの `https://host:port`。userinfo / query / fragment / path を拒否 |
 | `proxy.manual_username` | string | `""`。手動認証が必要な場合だけ使用 |
 | `proxy.manual_password_dpapi` | Base64 string または null | `null`。パスワード未指定は null。manual 以外では使用しない |
+| `proxy.manual_auth` | enum `credentials` / `windows` | `credentials`。manual 時の認証方式（排他）。`windows` は OS のログオン資格情報（既定の資格情報）で NTLM / Negotiate に応答し、ユーザー名・パスワードは使わない。既定値のときは書き出さない（M5） |
 | `autostart` | boolean | `false`。Run キー書込み失敗時は保存成功と表示しない |
 | `insertion` | object | 子項目の既定値から構成 |
 | `insertion.method` | enum `clipboard` / `sendinput` | `clipboard`。送信失敗からの自動切替はしない |
@@ -419,8 +420,8 @@ schema 1 より古い実在形式は初版にはない。0 / 欠損を推測移�
 
 | モード | 挙動 |
 | --- | --- |
-| 環境変数 `environment` | 起動時環境の `HTTPS_PROXY` / `https_proxy` を大文字小文字を無視して正規化。`NO_PROXY` / `no_proxy` に該当する送信先は直結。それ以外は指定 proxy。未指定なら直結 |
-| 手動 `manual` | 保存した proxy URL と必要なら `NetworkCredential` を使用。環境変数を混ぜず、全対象通信に同じ指定を適用。loopback は必ず直結 |
+| 環境変数 `environment` | 起動時環境の `HTTPS_PROXY` / `https_proxy` を大文字小文字を無視して正規化。`NO_PROXY` / `no_proxy` に該当する送信先は直結。それ以外は指定 proxy。未指定なら直結。URL に userinfo があればその資格情報、無ければ既定の資格情報（Windows のログオン情報。M5） |
+| 手動 `manual` | 保存した proxy URL と、認証方式に応じた資格情報（`credentials`: 必要なら `NetworkCredential`、`windows`: 既定の資格情報）を使用。環境変数を混ぜず、全対象通信に同じ指定を適用。loopback は必ず直結 |
 | なし `none` | `SocketsHttpHandler.UseProxy=false`。環境変数・Windows のシステム proxy / PAC を参照しない |
 
 Windows の環境は大文字小文字を区別しないが、テストや子への受渡しで重複が存在する場合は、完全一致の大文字キーを優先し、異なる値があれば設定画面で競合を知らせる。空文字は未指定とする。不正 proxy を検出した場合に黙って直結せず通信エラーとし、整文は原文、更新 / モデルは再試行可能な失敗へ戻す。`HTTP_PROXY` / `ALL_PROXY` / システム proxy を別経路として暗黙使用しない。互換ローカル HTTP は loopback なので直結である。
