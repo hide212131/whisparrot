@@ -420,7 +420,7 @@ public sealed class SettingsRecognizerPipelineTests : IDisposable
         await Dictate(Coordinator());
         Assert.Empty(_inj.Texts);
         Assert.Equal(0, _local.Calls);
-        Assert.Equal(1, server.Requests.Count);       // アプリによる再送なし
+        Assert.Single(server.Requests);       // アプリによる再送なし
         Assert.Contains("HTTP 500", _notices.Single().Message);
         Assert.DoesNotContain(DummyKey, _notices.Single().Message);
     }
@@ -433,7 +433,7 @@ public sealed class SettingsRecognizerPipelineTests : IDisposable
         var pol = new StubPolisher(new PolishSetup.Ready((_, _) => Task.FromResult(PolishResult.Fallback(PolishFailure.Http, "HTTP 500")), TimeSpan.FromSeconds(15)));
         await Dictate(Coordinator(pol));
         Assert.Equal(["クラウドの結果"], _inj.Texts);
-        Assert.Equal(1, server.Requests.Count);       // 整文要求を認識先へ送っていない
+        Assert.Single(server.Requests);       // 整文要求を認識先へ送っていない
     }
 
     [Fact]

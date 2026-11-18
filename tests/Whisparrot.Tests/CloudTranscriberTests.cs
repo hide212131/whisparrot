@@ -320,7 +320,7 @@ public sealed class CloudTranscriberTests : IDisposable
 
         Assert.False(r.IsSuccess);
         Assert.Equal(expected, r.Failure);
-        Assert.Equal(1, server.Requests.Count);   // 自動再送 0（429 の Retry-After でも待たない）
+        Assert.Single(server.Requests);   // 自動再送 0（429 の Retry-After でも待たない）
         Assert.Equal(status, r.HttpStatus);
         foreach (var s in new[] { r.Message, r.Detail ?? "", r.ToString() })
         {
@@ -419,7 +419,7 @@ public sealed class CloudTranscriberTests : IDisposable
         Assert.Equal(TranscriptionFailure.Timeout, r.Failure);
         Assert.Contains("時間切れ", r.Message);
         Assert.InRange(sw.Elapsed.TotalSeconds, 0.5, 5);
-        Assert.Equal(1, server.Requests.Count);
+        Assert.Single(server.Requests);
     }
 
     [Fact]
@@ -445,7 +445,7 @@ public sealed class CloudTranscriberTests : IDisposable
         await Wait.UntilAsync(() => server.Requests.Count == 1, "request arrived");
         cts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
-        Assert.Equal(1, server.Requests.Count);
+        Assert.Single(server.Requests);
     }
 
     [Fact]
