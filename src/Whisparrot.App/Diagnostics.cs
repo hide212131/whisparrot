@@ -80,7 +80,7 @@ internal static partial class Diagnostics
     }
 
     /// <summary>
-    /// --inject-probe [--grace-ms N]: 5 秒のカウントダウン後、本番と同じ投入経路で固定文字列を前景アプリへ投入し、各ステップを出す。
+    /// --inject-probe [--strategy paste-message|send-input] [--grace-ms N] [--message-grace-ms N]: 5 秒のカウントダウン後、本番と同じ投入経路で固定文字列を前景アプリへ投入し、各ステップを出す。
     /// </summary>
     public static int InjectProbe(string[] args)
     {
@@ -91,7 +91,21 @@ internal static partial class Diagnostics
             if (i + 1 >= args.Length || !int.TryParse(args[i + 1], out var ms) || ms < 0) { Console.WriteLine("--grace-ms には 0 以上の整数が必要です"); return 2; }
             grace = ms;
         }
-        return Whisparrot.App.Windows.TextInjector.InjectProbe(grace, line => Console.WriteLine(line));
+        var strategy = Whisparrot.App.Windows.TextInjector.PasteStrategy.Auto;
+        var si = Array.IndexOf(args, "--strategy");
+        if (si >= 0 && (si + 1 >= args.Length || !Whisparrot.App.Windows.TextInjector.TryParseStrategy(args[si + 1], out strategy)))
+        {
+            Console.WriteLine("--strategy には paste-message または send-input が必要です");
+            return 2;
+        }
+        int? messageGrace = null;
+        var mi = Array.IndexOf(args, "--message-grace-ms");
+        if (mi >= 0)
+        {
+            if (mi + 1 >= args.Length || !int.TryParse(args[mi + 1], out var mms) || mms < 0) { Console.WriteLine("--message-grace-ms には 0 以上の整数が必要です"); return 2; }
+            messageGrace = mms;
+        }
+        return Whisparrot.App.Windows.TextInjector.InjectProbe(grace, strategy, line => Console.WriteLine(line), messageGrace);
     }
 
     /// <summary>--pill-probe: 非対話でもできる範囲でピルの生成・表示・スタイルを確認する（描画の目視はできない）。</summary>

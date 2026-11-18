@@ -115,7 +115,7 @@ public sealed class ClipboardSnapshotTests
         var trace = new List<string>();
         var r = TextInjector.InjectClipboard("投入テキスト", () => true, grace: TimeSpan.Zero, trace: trace.Add);
         Assert.True(r.Outcome == InjectOutcome.Success, r.Message);
-        Assert.Equal(["sequence_after_set", "paste_sent", "sequence_before_restore", "restored"], trace.Select(t => t[..t.IndexOf('=')]));
+        Assert.Equal(["sequence_after_set", "route", "paste_sent", "sequence_before_restore", "restored"], trace.Select(t => t[..t.IndexOf('=')]));
         Assert.Contains("restored=True", trace);
         Assert.DoesNotContain(trace, t => t.Contains("投入テキスト") || t.Contains("元のテキスト"));
         AssertRestored(ThreeFormats(), Win32.ReadAll());

@@ -5,7 +5,9 @@ using static Whisparrot.App.Windows.NativeMethods;
 namespace Whisparrot.App.Windows;
 
 /// <summary>
-/// クリップボード方式の投入（設計 §10.1）。元の内容を退避 → テキスト設定 → Ctrl+V → 復元。
+/// クリップボード方式の投入（設計 §10.1）。元の内容を退避 → テキスト設定 → 貼り付け → 復元。
+/// 貼り付けは二段構え: 主経路は前景スレッドのフォーカス中コントロールへ WM_PASTE を同期送信する（キーボードフックを通らないため、
+/// キーリマッパの再定義に左右されない）。宛先が得られない・送信が失敗／タイムアウトした場合だけ、予備経路の SendInput（Ctrl+V）へ落ちる。
 /// Enter は送らない。クリップボードは STA の専用スレッドで扱う。
 /// 退避は HGLOBAL 形式（テキスト / HTML / RTF / HDROP 等）を形式ごとに独立して行い、取得できない形式・
 /// バイト複製できない GDI ハンドル形式（CF_ENHMETAFILE 等）はその形式だけを飛ばす（飛ばした形式は復元されない）。
@@ -21,6 +23,35 @@ internal sealed class TextInjector : ITextInjector
     /// 復元後の内容を読まれる（または何も貼られない）事例があったため 1500 ms とした。
     /// </summary>
     internal static readonly TimeSpan PasteGrace = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>WM_PASTE の送信が戻らないときに待つ上限。超えたら失敗とみなし予備経路へ落ちる。</summary>
+    internal static readonly TimeSpan PasteMessageTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>WM_PASTE は同期送信で、対象は処理中にクリップボードを読むため、戻り後の待ちは既定で不要（0）。実測で必要なら根拠を添えて増やす。</summary>
+    internal static readonly TimeSpan PasteMessageGrace = TimeSpan.Zero;
+
+    internal enum PasteStrategy { Auto, PasteMessage, SendInput }
+    internal enum MessageResult { Delivered, NoTarget, Failed }
+
+    internal static class Routes
+    {
+        public const string PasteMessage = "paste-message";
+        public const string SendInput = "send-input";
+    }
+
+    /// <summary>貼り付け段の結果。Route は実際に送信を試みた最後の経路。</summary>
+    internal readonly record struct PasteSend(bool Sent, string Route);
+
+    internal static bool TryParseStrategy(string? value, out PasteStrategy strategy)
+    {
+        strategy = PasteStrategy.Auto;
+        switch (value)
+        {
+            case "paste-message": strategy = PasteStrategy.PasteMessage; return true;
+            case "send-input": strategy = PasteStrategy.SendInput; return true;
+            default: return false;
+        }
+    }
 
     private const uint CF_BITMAP = 2, CF_METAFILEPICT = 3, CF_PALETTE = 9, CF_DIB = 8, CF_DIBV5 = 17, CF_ENHMETAFILE = 14;
     private const uint CF_TEXT = 1, CF_OEMTEXT = 7, CF_LOCALE = 16;
@@ -71,7 +102,49 @@ internal sealed class TextInjector : ITextInjector
         if (!ForegroundIsExternal()) return Fail("入力先のウィンドウが見つかりません");
         if (!WaitModifiersReleased()) return Fail("修飾キーが押されたままです");
 
-        return InjectClipboard(text, SendCtrlV);
+        return InjectClipboard(text, () => PasteStep(PasteStrategy.Auto, SendPasteMessage, SendCtrlV));
+    }
+
+    /// <summary>
+    /// 貼り付け段の経路選択。Auto は paste-message を先に試し、宛先なし／失敗なら send-input へ落ちる。
+    /// 強制指定（診断用）は片方だけを使い、落ちない。メッセージ送信が時間切れになった場合、対象が後で処理して
+    /// 予備経路と二重に貼り付ける可能性は残る（切り分けられない）。
+    /// </summary>
+    internal static PasteSend PasteStep(PasteStrategy strategy, Func<MessageResult> sendMessage, Func<bool> sendKeys, Action<string>? trace = null)
+    {
+        if (strategy != PasteStrategy.SendInput)
+        {
+            var m = sendMessage();
+            trace?.Invoke($"paste_message={m}");
+            if (m == MessageResult.Delivered) return new PasteSend(true, Routes.PasteMessage);
+            if (strategy == PasteStrategy.PasteMessage) return new PasteSend(false, Routes.PasteMessage);
+            trace?.Invoke("fallback=send-input");
+        }
+        return new PasteSend(sendKeys(), Routes.SendInput);
+    }
+
+    /// <summary>前景スレッドのフォーカス中コントロール（取れなければ前景ウィンドウ）へ WM_PASTE を同期送信する。</summary>
+    private static MessageResult SendPasteMessage()
+    {
+        var target = ResolvePasteTarget();
+        if (target == IntPtr.Zero) return MessageResult.NoTarget;
+        return SendPasteMessageTo(target);
+    }
+
+    internal static MessageResult SendPasteMessageTo(IntPtr hwnd)
+    {
+        var r = SendMessageTimeoutW(hwnd, WM_PASTE, IntPtr.Zero, IntPtr.Zero, SMTO_ABORTIFHUNG, (uint)PasteMessageTimeout.TotalMilliseconds, out _);
+        return r == IntPtr.Zero ? MessageResult.Failed : MessageResult.Delivered;
+    }
+
+    private static IntPtr ResolvePasteTarget()
+    {
+        var fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero) return IntPtr.Zero;
+        var tid = GetWindowThreadProcessId(fg, out _);
+        var info = new GUITHREADINFO { cbSize = (uint)Marshal.SizeOf<GUITHREADINFO>() };
+        if (tid != 0 && GetGUIThreadInfo(tid, ref info) && info.hwndFocus != IntPtr.Zero) return info.hwndFocus;
+        return fg;
     }
 
     /// <summary>
@@ -79,7 +152,15 @@ internal sealed class TextInjector : ITextInjector
     /// 貼り付けの送信を差し替えられるようにしてあり、テストはキー入力なしでクリップボード側だけを検証する。
     /// </summary>
     internal static InjectResult InjectClipboard(string text, Func<bool> sendPaste, Action<IReadOnlyList<SkippedFormat>>? onSkipped = null,
-        TimeSpan? grace = null, Action<string>? trace = null)
+        TimeSpan? grace = null, Action<string>? trace = null) =>
+        InjectClipboard(text, () => new PasteSend(sendPaste(), Routes.SendInput), onSkipped, grace, trace);
+
+    /// <summary>
+    /// 本体。復元前の待ちは経路で変わる: send-input は非同期に読まれうるので grace（既定 PasteGrace）、
+    /// paste-message は同期送信なので PasteMessageGrace（既定 0）。grace 引数は send-input の待ちを上書きする。
+    /// </summary>
+    internal static InjectResult InjectClipboard(string text, Func<PasteSend> paste, Action<IReadOnlyList<SkippedFormat>>? onSkipped = null,
+        TimeSpan? grace = null, Action<string>? trace = null, TimeSpan? messageGrace = null)
     {
         if (!OpenClipboardRetry()) return Fail("クリップボードを開けませんでした");
         List<(uint Format, byte[] Data)> snapshot;
@@ -105,9 +186,11 @@ internal sealed class TextInjector : ITextInjector
         var ourSequence = GetClipboardSequenceNumber();
         trace?.Invoke($"sequence_after_set={ourSequence}");
 
-        var sent = sendPaste();
+        var (sent, route) = paste();
+        trace?.Invoke($"route={route}");
         trace?.Invoke($"paste_sent={sent}");
-        Thread.Sleep(grace ?? PasteGrace);
+        var wait = route == Routes.PasteMessage ? messageGrace ?? PasteMessageGrace : grace ?? PasteGrace;
+        if (wait > TimeSpan.Zero) Thread.Sleep(wait);
 
         // 復元: 自分が設定してから変わっていなければ戻す。別のコピーがあればそちらを優先する。
         if (!OpenClipboardRetry()) return Fail("貼り付けましたが、クリップボードを復元できませんでした");
@@ -127,7 +210,8 @@ internal sealed class TextInjector : ITextInjector
         {
             CloseClipboard();
         }
-        return sent ? new InjectResult(InjectOutcome.Success) : Fail("キー入力を送れませんでした");
+        if (sent) return new InjectResult(InjectOutcome.Success, Route: route);
+        return new InjectResult(InjectOutcome.Failed, route == Routes.PasteMessage ? "貼り付けメッセージを送れませんでした" : "キー入力を送れませんでした", route);
     }
 
     /// <summary>
@@ -229,10 +313,12 @@ internal sealed class TextInjector : ITextInjector
     /// 固定文字列を投入して各ステップを出力する。出すのは前景のプロセス名とクラス名（タイトルは出さない）、
     /// sequence 番号、成否、長さだけで、クリップボードの内容は出さない。
     /// </summary>
-    internal static int InjectProbe(int? graceMs, Action<string> write)
+    internal static int InjectProbe(int? graceMs, PasteStrategy strategy, Action<string> write, int? messageGraceMs = null)
     {
         var grace = graceMs is { } g ? TimeSpan.FromMilliseconds(g) : PasteGrace;
-        write($"grace_ms={(int)grace.TotalMilliseconds}");
+        var messageGrace = messageGraceMs is { } mg ? TimeSpan.FromMilliseconds(mg) : PasteMessageGrace;
+        write($"strategy={strategy switch { PasteStrategy.PasteMessage => Routes.PasteMessage, PasteStrategy.SendInput => Routes.SendInput, _ => "auto" }}");
+        write($"grace_ms={(int)grace.TotalMilliseconds} message_grace_ms={(int)messageGrace.TotalMilliseconds}");
         for (var i = 5; i >= 1; i--)
         {
             write($"countdown={i} (focus the target app now)");
@@ -242,12 +328,15 @@ internal sealed class TextInjector : ITextInjector
         var thread = new Thread(() =>
         {
             write($"foreground={DescribeForeground()}");
+            write($"paste_target={DescribeTarget()}");
             var external = ForegroundIsExternal();
             write($"foreground_external={external}");
             if (!external) { write("result=Failed 入力先のウィンドウが見つかりません"); return; }
             if (!WaitModifiersReleased()) { write("result=Failed 修飾キーが押されたままです"); return; }
             write($"inject_text_length={ProbeText.Length}");
-            var r = InjectClipboard(ProbeText, SendCtrlV, s => write($"skipped_formats={FormatSkipped(s)}"), grace, write);
+            var r = InjectClipboard(ProbeText, () => PasteStep(strategy, SendPasteMessage, SendCtrlV, write),
+                s => write($"skipped_formats={FormatSkipped(s)}"), grace, write, messageGrace);
+            write($"route_used={r.Route ?? "none"}");
             write($"result={r.Outcome}{(r.Message is { } m ? " " + m : "")}");
             if (r.Outcome == InjectOutcome.Success) exit = 0;
         }) { IsBackground = true };
@@ -268,6 +357,15 @@ internal sealed class TextInjector : ITextInjector
         var cls = new System.Text.StringBuilder(256);
         GetClassNameW(hwnd, cls, cls.Capacity);
         return $"process={process} class={cls}";
+    }
+
+    private static string DescribeTarget()
+    {
+        var t = ResolvePasteTarget();
+        if (t == IntPtr.Zero) return "none";
+        var cls = new System.Text.StringBuilder(256);
+        GetClassNameW(t, cls, cls.Capacity);
+        return $"class={cls} is_foreground={t == GetForegroundWindow()}";
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
