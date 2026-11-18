@@ -44,7 +44,7 @@ public sealed class SessionCoordinator : IDisposable
     private sealed record BarrierEvt(TaskCompletionSource Tcs) : Evt;
 
     private readonly IRecorder _recorder;
-    private readonly IRecognizer _recognizer;
+    private readonly IRecognitionSource _recognition;
     private readonly ITextInjector _injector;
     private readonly ITextPolisher? _polisher;
     private readonly Channel<Evt> _events = Channel.CreateUnbounded<Evt>(new UnboundedChannelOptions { SingleReader = true });
@@ -57,11 +57,17 @@ public sealed class SessionCoordinator : IDisposable
     private string? _rawText;        // 整文中の原文（整文が終わる／取消されるまで）
     private string? _pendingText;    // 未投入の一件（Failed 状態でだけ保持）
     private PolishSetup _polish = new PolishSetup.Off(); // 録音開始時に固定する整文の構え
+    private RecognitionSetup.Ready? _recognize;          // 録音開始時に固定する認識の構え（クラウドの宛先・キーを含む）
 
     public SessionCoordinator(IRecorder recorder, IRecognizer recognizer, ITextInjector injector, ITextPolisher? polisher = null)
+        : this(recorder, new FixedRecognitionSource(recognizer), injector, polisher)
+    {
+    }
+
+    public SessionCoordinator(IRecorder recorder, IRecognitionSource recognition, ITextInjector injector, ITextPolisher? polisher = null)
     {
         _recorder = recorder;
-        _recognizer = recognizer;
+        _recognition = recognition;
         _injector = injector;
         _polisher = polisher;
         _recorder.Failed += OnRecorderFailed;
@@ -151,10 +157,10 @@ public sealed class SessionCoordinator : IDisposable
 
     private void BeginRecording()
     {
-        var problem = _recognizer.CheckReady();
-        if (problem is not null)
+        var setup = PrepareRecognition();
+        if (setup is RecognitionSetup.Unconfigured u)
         {
-            Notify(NoticeKind.Error, problem);
+            Notify(NoticeKind.Error, u.Reason);
             return;
         }
         _sessionId++;
@@ -169,8 +175,15 @@ public sealed class SessionCoordinator : IDisposable
             return;
         }
         _stopping = false;
+        _recognize = (RecognitionSetup.Ready)setup;
         _polish = PreparePolish();
         SetState(SessionState.Recording);
+    }
+
+    private RecognitionSetup PrepareRecognition()
+    {
+        try { return _recognition.Prepare(); }
+        catch { return new RecognitionSetup.Unconfigured("認識の設定を読み込めません"); }
     }
 
     private PolishSetup PreparePolish()
@@ -218,12 +231,40 @@ public sealed class SessionCoordinator : IDisposable
         var cts = _sessionCts = new CancellationTokenSource();
         var id = _sessionId;
         var pcm = s.Pcm;
+        var recognize = _recognize!;
+        var token = cts.Token;
         SetState(SessionState.Recognizing);
         _ = Task.Run(async () =>
         {
             try
             {
-                Post(new RecognizedEvt(id, await _recognizer.RecognizeAsync(new RecognitionRequest(pcm), cts.Token), null));
+                var request = new RecognitionRequest(pcm);
+                if (recognize.Deadline is not { } deadline)
+                {
+                    Post(new RecognizedEvt(id, await recognize.RecognizeAsync(request, token), null));
+                    return;
+                }
+
+                // 認識側が期限を守らなくても、期限でセッションを終える。結果を採るのは先に着いた一回だけで、
+                // 期限後の遅れた成功は投稿されない（取消を無視した認識が後で完了しても何も起きない）。
+                var work = Task.Run(() => recognize.RecognizeAsync(request, token), CancellationToken.None);
+                _ = work.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                using var timer = CancellationTokenSource.CreateLinkedTokenSource(token);
+                var winner = await Task.WhenAny(work, Task.Delay(deadline, timer.Token)).ConfigureAwait(false);
+                if (winner == work)
+                {
+                    timer.Cancel();
+                    Post(new RecognizedEvt(id, await work.ConfigureAwait(false), null));
+                    return;
+                }
+                if (token.IsCancellationRequested) return; // 利用者の取消が先
+                // 先に取消して要求・応答を止め、その後に期限切れを知らせる（Post 後はセッションの CTS が破棄され得る）。
+                try { cts.Cancel(); } catch (ObjectDisposedException) { /* 先に終わったセッション */ }
+                Post(new RecognizedEvt(id, null, new RecognitionException("文字起こしできませんでした（時間切れ）")));
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                // 利用者の取消。状態はすでに変わっており、結果は使われない。
             }
             catch (Exception ex)
             {

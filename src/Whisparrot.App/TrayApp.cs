@@ -44,7 +44,9 @@ internal static class TrayApp
         var injector = new TextInjector();
         var chatGpt = new ChatGptAuthService(network, new ChatGptTokenStore(AppPaths.ChatGptTokenPath, protector));
         var polisher = new SettingsTextPolisher(() => settings.Current, protector, network, chatGpt);
-        var coordinator = new SessionCoordinator(recorder, recognizer, injector, polisher);
+        // 認識の選択（local / cloud）は録音開始時に固定する。ローカルの準備確認・ワーカーは既存の WhisperRecognizer のまま。
+        var recognition = new SettingsRecognizer(() => settings.Current, protector, network, recognizer);
+        var coordinator = new SessionCoordinator(recorder, recognition, injector, polisher);
 
         var pill = new PillWindow();
         var hotkey = new HotkeyService();
@@ -112,7 +114,9 @@ internal static class TrayApp
         // プロキシは次の通信（クライアント生成）から。ここでは待機中の認識子だけを解放する。
         settings.Changed += (old, next) => app.Dispatcher.BeginInvoke(() =>
         {
-            if (old.Recognition.Model != next.Recognition.Model) recognizer.ReleaseIdleWorker();
+            if (old.Recognition.Model != next.Recognition.Model
+                || (old.Recognition.Engine != next.Recognition.Engine && next.Recognition.Engine == RecognitionEngine.Cloud))
+                recognizer.ReleaseIdleWorker();
             UpdateTrayText();
         });
 
@@ -138,7 +142,13 @@ internal static class TrayApp
             try { autostart.Apply(settings.Current.Autostart); } // exe を移動した後の修復を含む
             catch (Exception ex) { Console.WriteLine("autostart_sync_failed=" + ex.GetType().Name); }
 
-            // 初回起動の導線: 選択中のモデルが使えなければ設定を開く（検証は背景で行い、キャッシュも温める）。
+            // 初回起動の導線: ローカル選択中にモデルが使えなければ設定を開く（検証は背景で行い、キャッシュも温める）。
+            // クラウド選択時はローカルモデルを要求しない（案内も検証もしない）。
+            if (settings.Current.Recognition.Engine == RecognitionEngine.Cloud)
+            {
+                Console.WriteLine("recognition_engine=cloud");
+                return;
+            }
             _ = Task.Run(async () =>
             {
                 var id = settings.Current.Recognition.Model;
