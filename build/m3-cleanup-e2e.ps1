@@ -101,7 +101,7 @@ try {
     Check 'remote endpoint without an API key: no attempt, raw injected once, status shown' ($r.Code -eq 0 -and ((Injected $r) -join '|') -eq $raw -and $r.Text -match 'polish_setup=Unconfigured\(API キーが未設定' -and $r.Text -match '\[notice:Warning\] 整文の設定が未完了' -and -not ($r.Text -match 'state=Polishing'))
     Write-Config $url 'm' $false 'chatgpt'
     $r = Run-Probe $cfg $raw
-    Check 'provider=chatgpt (not implemented): no attempt, raw injected once' ($r.Code -eq 0 -and ((Injected $r) -join '|') -eq $raw -and $r.Text -match 'ChatGPT 経由の整文は未対応')
+    Check 'provider=chatgpt (not logged in, T13): no attempt, raw injected once' ($r.Code -eq 0 -and ((Injected $r) -join '|') -eq $raw -and $r.Text -match 'ChatGPT にログインしていません')
     Write-Config $url 'm' $true 'off'
     Remove-Item $log -ErrorAction SilentlyContinue
     $r = Run-Probe $cfg $raw

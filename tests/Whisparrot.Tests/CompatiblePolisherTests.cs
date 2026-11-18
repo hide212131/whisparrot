@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Whisparrot.Core;
 using Whisparrot.Core.Settings;
+using Whisparrot.Infrastructure.ChatGpt;
 using Whisparrot.Infrastructure.Network;
 using Whisparrot.Infrastructure.Polish;
 using Whisparrot.Infrastructure.Settings;
@@ -406,10 +407,12 @@ public sealed class SettingsTextPolisherTests : IDisposable
     {
         var service = svc = new SettingsService(new JsonSettingsStore(Path.Combine(_dir, "config.json")));
         service.Update(mutate);
-        return new SettingsTextPolisher(() => service.Current, _protector, Network());
+        return new SettingsTextPolisher(() => service.Current, _protector, Network(), NoLogin());
     }
 
     private static NetworkContext Network() => new(() => ProxyConfig.Environment, ProxyEnvironment.Empty);
+
+    private ChatGptAuthService NoLogin() => new(Network(), new ChatGptTokenStore(Path.Combine(_dir, "chatgpt-token.json"), _protector));
 
     private AppSettings Compatible(AppSettings s, string url, string? key, string model) =>
         s with { Cleanup = s.Cleanup with { Provider = CleanupProvider.Compatible, Compatible = new CompatibleCleanupSettings(url, _protector.Protect(key), model) } };
@@ -417,15 +420,16 @@ public sealed class SettingsTextPolisherTests : IDisposable
     [Fact]
     public void Default_settings_are_off()
     {
-        var p = new SettingsTextPolisher(() => AppSettings.Default, _protector, Network());
+        var p = new SettingsTextPolisher(() => AppSettings.Default, _protector, Network(), NoLogin());
         Assert.IsType<PolishSetup.Off>(p.Prepare());
     }
 
     [Fact]
-    public void ChatGpt_is_not_implemented_and_never_sends()
+    public void ChatGpt_without_a_login_never_sends_and_keeps_the_setting()
     {
-        var p = With(s => s with { Cleanup = s.Cleanup with { Provider = CleanupProvider.ChatGpt } }, out var svc);
-        Assert.IsType<PolishSetup.Unconfigured>(p.Prepare());
+        var p = With(s => s with { Cleanup = s.Cleanup with { Provider = CleanupProvider.ChatGpt, ChatGpt = new ChatGptCleanupSettings("m") } }, out var svc);
+        var setup = Assert.IsType<PolishSetup.Unconfigured>(p.Prepare());
+        Assert.Contains("ログイン", setup.Reason);
         Assert.Equal(CleanupProvider.ChatGpt, svc.Current.Cleanup.Provider); // 設定値は変えない
     }
 
@@ -441,7 +445,7 @@ public sealed class SettingsTextPolisherTests : IDisposable
     {
         // 設定ウィンドウは検証済みの値しか保存しない。ここでは config.json の手編集など、検証をすり抜けた値でも安全側に倒れることを確認する。
         var settings = Compatible(AppSettings.Default, url, key, model);
-        var p = new SettingsTextPolisher(() => settings, _protector, Network());
+        var p = new SettingsTextPolisher(() => settings, _protector, Network(), NoLogin());
         var setup = Assert.IsType<PolishSetup.Unconfigured>(p.Prepare());
         Assert.Contains(reason, setup.Reason);
     }

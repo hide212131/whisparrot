@@ -183,9 +183,10 @@ internal static partial class Diagnostics
         var autostart = new AutostartService(Environment.ProcessPath!, testKey);
         var network = new NetworkContext(() => ProxyConfig.FromSettings(settings.Current.Proxy, protector), ProxyEnvironment.Capture());
         var models = new Whisparrot.Infrastructure.Models.ModelManager(Path.Combine(dir, "models"), Whisparrot.Infrastructure.Models.ModelCatalog.Embedded(), network);
+        var chatGpt = new Whisparrot.Infrastructure.ChatGpt.ChatGptAuthService(network, new Whisparrot.Infrastructure.ChatGpt.ChatGptTokenStore(Path.Combine(dir, "chatgpt-token.json"), protector));
         var tried = new List<Hotkey>();
         var hotkeyResult = (Ok: true, Err: 0);
-        var win = new Views.SettingsWindow(settings, protector, models, network, autostart, hk => { tried.Add(hk); return hotkeyResult; }, () => null, () => null, null);
+        var win = new Views.SettingsWindow(settings, protector, models, network, chatGpt, autostart, hk => { tried.Add(hk); return hotkeyResult; }, () => null, () => null, null);
         win.Show();
 
         T F<T>(string name) => (T)typeof(Views.SettingsWindow).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(win)!;
@@ -237,11 +238,29 @@ internal static partial class Diagnostics
         // 再度開いて、空のままの伏せ字欄は既存の暗号文を維持する
         var before = s.Cleanup.Compatible.ApiKeyDpapi;
         win.Close();
-        var win2 = new Views.SettingsWindow(settings, protector, models, network, autostart, hk => (true, 0), () => null, () => null, null);
+        var win2 = new Views.SettingsWindow(settings, protector, models, network, chatGpt, autostart, hk => (true, 0), () => null, () => null, null);
         win2.Show();
         typeof(Views.SettingsWindow).GetMethod("Save", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(win2, null);
         var s2 = new JsonSettingsStore(settings.ConfigPath).Load().Settings;
         check("re-save with empty password boxes keeps the existing ciphertext", s2.Cleanup.Compatible.ApiKeyDpapi == before && s2 == s);
+
+        // T13: ChatGPT を選ぶと同じ領域にログイン / ログアウト・接続状態・モデル指定が出る。未ログインでも勝手にブラウザは開かない（操作を求める表示だけ）。
+        win2.Close();
+        var win3 = new Views.SettingsWindow(settings, protector, models, network, chatGpt, autostart, hk => (true, 0), () => null, () => null, null);
+        win3.Show();
+        T F3<T>(string name) => (T)typeof(Views.SettingsWindow).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(win3)!;
+        check("chatgpt panel is hidden until ChatGPT is selected", F3<System.Windows.Controls.StackPanel>("_cgPanel").Visibility == System.Windows.Visibility.Collapsed);
+        F3<System.Windows.Controls.RadioButton>("_cleanChatGpt").IsChecked = true;
+        check("chatgpt selected while logged out: panel shows 未ログイン, login enabled, logout disabled, no login attempt started",
+            F3<System.Windows.Controls.StackPanel>("_cgPanel").Visibility == System.Windows.Visibility.Visible
+            && F3<System.Windows.Controls.TextBlock>("_cgStatus").Text.Contains("未ログイン")
+            && F3<System.Windows.Controls.Button>("_cgLogin").IsEnabled && !F3<System.Windows.Controls.Button>("_cgLogout").IsEnabled
+            && F3<System.Windows.Controls.StackPanel>("_cgPaste").Visibility == System.Windows.Visibility.Collapsed);
+        F3<System.Windows.Controls.TextBox>("_cgModel").Text = " model-gpt ";
+        typeof(Views.SettingsWindow).GetMethod("Save", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(win3, null);
+        var s3 = new JsonSettingsStore(settings.ConfigPath).Load().Settings;
+        check("chatgpt provider + trimmed model persisted; compatible settings kept", s3.Cleanup.Provider == CleanupProvider.ChatGpt && s3.Cleanup.ChatGpt.Model == "model-gpt"
+            && s3.Cleanup.Compatible == s2.Cleanup.Compatible && !File.Exists(Path.Combine(dir, "chatgpt-token.json")));
         return true;
     }
 }

@@ -1,9 +1,11 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using Whisparrot.Core;
 using Whisparrot.Core.Settings;
 using Whisparrot.Infrastructure.Audio;
+using Whisparrot.Infrastructure.ChatGpt;
 using Whisparrot.Infrastructure.Models;
 using Whisparrot.Infrastructure.Network;
 using Whisparrot.Infrastructure.Settings;
@@ -20,6 +22,7 @@ internal sealed class SettingsWindow : Window
     private readonly ISecretProtector _protector;
     private readonly ModelManager _models;
     private readonly NetworkContext _network;
+    private readonly ChatGptAuthService _chatGpt;
     private readonly AutostartService _autostart;
     private readonly Func<Hotkey, (bool Ok, int Error)> _tryHotkey;
     private readonly Func<Hotkey?> _adoptedHotkey;
@@ -40,7 +43,16 @@ internal sealed class SettingsWindow : Window
 
     private readonly RadioButton _cleanOff = new() { Content = "OFF", GroupName = "clean" };
     private readonly RadioButton _cleanCompat = new() { Content = "OpenAI 互換エンドポイント", GroupName = "clean" };
-    private readonly RadioButton _cleanChatGpt = new() { Content = "ChatGPT — 未対応（T13）", GroupName = "clean", IsEnabled = false };
+    private readonly RadioButton _cleanChatGpt = new() { Content = "ChatGPT（Sign in with ChatGPT）", GroupName = "clean" };
+    private readonly StackPanel _cgPanel = new() { Margin = new Thickness(20, 0, 0, 4) };
+    private readonly TextBlock _cgStatus = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly Button _cgLogin = new() { Content = "ログイン", Padding = new Thickness(10, 1, 10, 1), Margin = new Thickness(0, 0, 8, 0) };
+    private readonly Button _cgLogout = new() { Content = "ログアウト", Padding = new Thickness(10, 1, 10, 1) };
+    private readonly TextBox _cgModel = new();
+    private readonly StackPanel _cgPaste = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 4, 0, 0) };
+    private readonly TextBox _cgAuthUrl = new() { IsReadOnly = true };
+    private readonly TextBox _cgPasted = new();
+    private ChatGptAuthService.ChatGptLoginAttempt? _login;
     private readonly TextBox _baseUrl = new(), _cleanModel = new();
     private readonly PasswordBox _apiKey = new();
     private readonly CheckBox _clearKey = new() { Content = "保存済みの API キーを削除" };
@@ -58,10 +70,10 @@ internal sealed class SettingsWindow : Window
     private readonly CheckBox _autostartBox = new() { Content = "ログオン時に自動起動する" };
     private readonly TextBlock _error = new() { Foreground = System.Windows.Media.Brushes.Firebrick, TextWrapping = TextWrapping.Wrap };
 
-    public SettingsWindow(SettingsService settings, ISecretProtector protector, ModelManager models, NetworkContext network,
+    public SettingsWindow(SettingsService settings, ISecretProtector protector, ModelManager models, NetworkContext network, ChatGptAuthService chatGpt,
         AutostartService autostart, Func<Hotkey, (bool Ok, int Error)> tryHotkey, Func<Hotkey?> adoptedHotkey, Func<string?> backendText, string? notice)
     {
-        _settings = settings; _protector = protector; _models = models; _network = network;
+        _settings = settings; _protector = protector; _models = models; _network = network; _chatGpt = chatGpt;
         _autostart = autostart; _tryHotkey = tryHotkey; _adoptedHotkey = adoptedHotkey; _backendText = backendText;
 
         Title = "whisparrot 設定";
@@ -93,6 +105,7 @@ internal sealed class SettingsWindow : Window
 
         Load(settings.Current);
         Loaded += async (_, _) => await RefreshModelStatusAsync();
+        Closed += (_, _) => _login?.Dispose();
         Closing += (_, e) =>
         {
             if (_download is null) return;
@@ -166,9 +179,101 @@ internal sealed class SettingsWindow : Window
     {
         _apiKey.ToolTip = "保存済みの場合は空のままにすると維持されます";
         _baseUrl.TextChanged += (_, _) => UpdateDest();
-        return Group("整文", _cleanOff, _cleanCompat, _cleanChatGpt,
+        _cleanChatGpt.Checked += (_, _) => UpdateChatGptVisibility();
+        _cleanChatGpt.Unchecked += (_, _) => UpdateChatGptVisibility();
+        _cgLogin.Click += (_, _) => OnChatGptLogin();
+        _cgLogout.Click += (_, _) => OnChatGptLogout();
+        var cgButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
+        cgButtons.Children.Add(_cgLogin); cgButtons.Children.Add(_cgLogout);
+        var pasteButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+        var pasteOk = new Button { Content = "貼り付けた URL で続行", Padding = new Thickness(10, 1, 10, 1), Margin = new Thickness(0, 0, 8, 0) };
+        var pasteCancel = new Button { Content = "ログインを取り消す", Padding = new Thickness(10, 1, 10, 1) };
+        pasteOk.Click += (_, _) => OnChatGptPaste();
+        pasteCancel.Click += (_, _) => _login?.Cancel();
+        pasteButtons.Children.Add(pasteOk); pasteButtons.Children.Add(pasteCancel);
+        _cgPaste.Children.Add(new TextBlock { Text = "ブラウザでサインインしてください。自動で完了しない場合は、サインイン後にブラウザのアドレス欄に表示された URL 全体を貼り付けてください（別の端末のブラウザでも可）。", TextWrapping = TextWrapping.Wrap });
+        _cgPaste.Children.Add(Row("サインイン URL", _cgAuthUrl));
+        _cgPaste.Children.Add(Row("リダイレクト URL", _cgPasted));
+        _cgPaste.Children.Add(pasteButtons);
+        _cgPanel.Children.Add(_cgStatus);
+        _cgPanel.Children.Add(cgButtons);
+        _cgPanel.Children.Add(_cgPaste);
+        _cgPanel.Children.Add(Row("モデル名", _cgModel));
+        _cgPanel.Children.Add(new TextBlock { Text = "ログイン・ログアウトは保存を待たず、すぐに反映されます。ログイン情報（token）は config.json とは別のファイルに、Windows のユーザー保護（DPAPI）で暗号化して保存します。ブラウザでのサインイン自体の通信は、このアプリのプロキシ設定の対象外です。", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray, Margin = new Thickness(0, 4, 0, 0) });
+        return Group("整文", _cleanOff, _cleanCompat,
             Row("ベース URL", _baseUrl), _destHost, Row("API キー", _apiKey), _clearKey, Row("モデル名", _cleanModel),
-            new TextBlock { Text = "「互換エンドポイント」を選ぶと、認識したテキストだけをここで指定した送信先へ送って整文します（失敗・未設定・時間切れのときは認識結果をそのまま入力）。API キーは Windows のユーザー保護（DPAPI）で暗号化して保存します。ChatGPT 経由は未対応です。", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray });
+            _cleanChatGpt, _cgPanel,
+            new TextBlock { Text = "「互換エンドポイント」を選ぶと、認識したテキストだけをここで指定した送信先へ送って整文します（失敗・未設定・時間切れのときは認識結果をそのまま入力）。API キーは Windows のユーザー保護（DPAPI）で暗号化して保存します。「ChatGPT」は公式の Sign in with ChatGPT でログインし、同様に認識したテキストだけを送ります。", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray });
+    }
+
+    private void UpdateChatGptVisibility()
+    {
+        _cgPanel.Visibility = _cleanChatGpt.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        RefreshChatGptStatus();
+    }
+
+    /// <summary>接続状態の表示。未ログインで選ばれていても、ブラウザは開かず操作を求めるだけ。</summary>
+    private void RefreshChatGptStatus()
+    {
+        var st = _chatGpt.GetStatus();
+        var busy = _login is not null;
+        _cgStatus.Text = st.State switch
+        {
+            ChatGptConnection.LoggedIn => "接続状態: ログイン済み",
+            ChatGptConnection.LoggedOut => "接続状態: 未ログイン — 「ログイン」を押してブラウザでサインインしてください（整文は行われず、認識結果がそのまま入力されます）",
+            _ => $"接続状態: ログインが無効です（{st.Detail}）— 「ログイン」でやり直してください",
+        };
+        _cgLogin.IsEnabled = !busy;
+        _cgLogin.Content = st.State == ChatGptConnection.LoggedIn ? "再ログイン" : "ログイン";
+        _cgLogout.IsEnabled = !busy && st.State != ChatGptConnection.LoggedOut;
+    }
+
+    private async void OnChatGptLogin()
+    {
+        _error.Text = "";
+        if (_login is not null) return;
+        ChatGptAuthService.ChatGptLoginAttempt attempt;
+        try { attempt = _chatGpt.BeginLogin(); }
+        catch (ChatGptLoginException ex) { _error.Text = ex.Message; return; }
+        _login = attempt;
+        _cgAuthUrl.Text = attempt.AuthorizeUrl.AbsoluteUri;
+        _cgPasted.Text = "";
+        _cgPaste.Visibility = Visibility.Visible;
+        RefreshChatGptStatus();
+        try
+        {
+            // 利用者が「ログイン」を押した結果としてだけ開く。
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(attempt.AuthorizeUrl.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception) { _error.Text = "ブラウザを開けませんでした。下の URL を手動で開いてください。"; }
+        try
+        {
+            await attempt.Completion;
+            _error.Text = "";
+        }
+        catch (ChatGptLoginException ex) when (ex.Kind != ChatGptLoginFailure.Cancelled) { _error.Text = ex.Message; }
+        catch (ChatGptLoginException) { _error.Text = "ログインを取り消しました。"; }
+        finally
+        {
+            attempt.Dispose();
+            _login = null;
+            _cgPaste.Visibility = Visibility.Collapsed;
+            RefreshChatGptStatus();
+        }
+    }
+
+    private void OnChatGptPaste()
+    {
+        try { _login?.SubmitPasted(_cgPasted.Text); _error.Text = ""; }
+        catch (ChatGptLoginException ex) { _error.Text = ex.Message; }
+    }
+
+    private void OnChatGptLogout()
+    {
+        _error.Text = "";
+        try { _chatGpt.Logout(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _error.Text = "ログイン情報のファイルを削除できませんでした。"; }
+        RefreshChatGptStatus();
     }
 
     private UIElement AuthChoice()
@@ -234,6 +339,8 @@ internal sealed class SettingsWindow : Window
         _cleanChatGpt.IsChecked = s.Cleanup.Provider == CleanupProvider.ChatGpt;
         _baseUrl.Text = s.Cleanup.Compatible.BaseUrl;
         _cleanModel.Text = s.Cleanup.Compatible.Model;
+        _cgModel.Text = s.Cleanup.ChatGpt.Model;
+        UpdateChatGptVisibility();
         _clearKey.IsEnabled = s.Cleanup.Compatible.ApiKeyDpapi is not null;
         UpdateDest();
 
@@ -341,6 +448,7 @@ internal sealed class SettingsWindow : Window
             {
                 Provider = _cleanCompat.IsChecked == true ? CleanupProvider.Compatible : _cleanChatGpt.IsChecked == true ? CleanupProvider.ChatGpt : CleanupProvider.Off,
                 Compatible = new CompatibleCleanupSettings(_baseUrl.Text.Trim(), apiKey, _cleanModel.Text.Trim()),
+                ChatGpt = new ChatGptCleanupSettings(_cgModel.Text.Trim()),
             },
             Proxy = new ProxySettings(_pxManual.IsChecked == true ? ProxyMode.Manual : _pxNone.IsChecked == true ? ProxyMode.None : ProxyMode.Environment,
                 _pxUrl.Text.Trim(), _pxUser.Text.Trim(), pxPass,

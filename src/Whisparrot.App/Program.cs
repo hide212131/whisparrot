@@ -29,6 +29,9 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--model-download") return Diagnostics.ModelDownload(args);
         if (args.Length > 0 && args[0] == "--write-cleanup-config") return Diagnostics.WriteCleanupConfig(args);
         if (args.Length > 0 && args[0] == "--cleanup-probe") return Diagnostics.CleanupProbe(args);
+        if (args.Length > 0 && args[0] == "--chatgpt-login") return Diagnostics.ChatGptLogin(args);
+        if (args.Length > 0 && args[0] == "--chatgpt-status") return Diagnostics.ChatGptStatusProbe(args);
+        if (args.Length > 0 && args[0] == "--chatgpt-logout") return Diagnostics.ChatGptLogout(args);
         if (args.Length > 0 && args[0] == "--pipeline-file") return Diagnostics.PipelineFile(args, resources);
 
         using var mutex = new Mutex(true, SingletonMutexName, out var created);
