@@ -99,7 +99,7 @@ function Run-Pipeline([string]$wav, [string[]]$extra = @()) {
 }
 function Injected($r) { @($r.Text -split "`r?`n" | Where-Object { $_ -like 'injected_text=*' } | ForEach-Object { $_ -replace '^injected_text=', '' }) }
 function Kv($r, [string]$key) { if ($r.Text -match ("(?m)(?:^|\s)" + [regex]::Escape($key) + "=(\S+)")) { $Matches[1] } else { $null } }
-function States($r) { (@($r.Text -split "`r?`n" | ForEach-Object { if ($_ -match 'state=(\w+)') { $Matches[1] } }) -join '>' }
+function States($r) { (@($r.Text -split "`r?`n" | ForEach-Object { if ($_ -match 'state=(\w+)') { $Matches[1] } }) -join '>') }
 function No-Leak($r) { -not $r.Text.Contains($dummyKey) -and -not $r.Text.Contains('echo Bearer') -and -not $r.Text.Contains('model=') }
 
 New-Wav $tone 48000 $true
