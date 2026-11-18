@@ -51,7 +51,7 @@ internal static class TrayApp
         using var tray = new System.Windows.Forms.NotifyIcon
         {
             Icon = System.Drawing.SystemIcons.Application,
-            Text = "whisparrot",
+            Text = $"whisparrot {AppInfo.DisplayVersion}",
             Visible = true,
         };
 
@@ -69,8 +69,9 @@ internal static class TrayApp
         void UpdateTrayText()
         {
             var hk = hotkey.Adopted;
-            tray.Text = !settings.LoadResult.Usable ? "whisparrot（設定エラー）"
-                : hk is null ? "whisparrot（ホットキー未登録: トレイから操作）" : $"whisparrot（{hk.Display}）";
+            var name = $"whisparrot {AppInfo.DisplayVersion}";
+            tray.Text = !settings.LoadResult.Usable ? $"{name}（設定エラー）"
+                : hk is null ? $"{name}（ホットキー未登録: トレイから操作）" : $"{name}（{hk.Display}）";
         }
 
         var menu = new System.Windows.Forms.ContextMenuStrip();

@@ -306,7 +306,7 @@ internal sealed class SettingsWindow : Window
     }
 
     private UIElement BuildStartup() => Group("起動・更新", _autostartBox,
-        new TextBlock { Text = $"バージョン {AppInfo.Version} / {RuntimeInformation.ProcessArchitecture}" },
+        new TextBlock { Text = $"whisparrot {AppInfo.DisplayVersion} / {RuntimeInformation.ProcessArchitecture}" },
         new Button { Content = "更新を確認（今後の版で有効）", IsEnabled = false, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 1, 10, 1) });
 
     private void UpdateDest()

@@ -5,13 +5,16 @@
   arm64 | x64 | all
 .PARAMETER Backend
   cpu (default) | vulkan (x64 only). CUDA is out of scope for v1.
+.PARAMETER Version
+  Release version (e.g. 0.2.0). Passed as /p:Version and /p:InformationalVersion; default is the project's Version.
 .PARAMETER Out
   Output root (outside the repository is recommended). Default: out\<rid>\ under the repo.
 #>
 param(
     [ValidateSet('arm64', 'x64', 'all')][string]$Arch = 'all',
     [ValidateSet('cpu', 'vulkan')][string]$Backend = 'cpu',
-    [string]$Out = ''
+    [string]$Out = '',
+    [string]$Version = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -39,6 +42,7 @@ foreach ($rid in $rids) {
     if ($Backend -eq 'vulkan' -and $rid -ne 'win-x64') { Write-Host "skip $rid (vulkan is x64 only)"; continue }
     $dest = if ($Out) { Join-Path $Out $rid } else { Join-Path $root "out\$rid" }
     $publishArgs = @('publish', (Join-Path $root 'src\Whisparrot.App'), '-c', 'Release', '-r', $rid, "-p:Backend=$Backend", '-o', $dest)
+    if ($Version) { $publishArgs += "-p:Version=$Version"; $publishArgs += "-p:InformationalVersion=$Version" }
     if ($vc) { $publishArgs += "-p:VcRedistDir=$vc" }
     dotnet @publishArgs
     if ($LASTEXITCODE -ne 0) { throw "publish failed: $rid" }
