@@ -163,7 +163,7 @@ public sealed class CloudRecognitionSettingsTests : IDisposable
     // ---- 型・enum・null・重複・未知キー ----
 
     private static SettingsLoadResult ParseRecognition(string recognitionJson) =>
-        SettingsJson.Parse($$"""{"schema_version":1,"recognition":{{{recognitionJson}}}}""", Now);
+        SettingsJson.Parse("{\"schema_version\":1,\"recognition\":{" + recognitionJson + "}}", Now);
 
     [Theory]
     [InlineData("\"engine\":\"auto\"")]
