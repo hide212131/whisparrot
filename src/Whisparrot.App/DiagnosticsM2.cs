@@ -261,6 +261,71 @@ internal static partial class Diagnostics
         var s3 = new JsonSettingsStore(settings.ConfigPath).Load().Settings;
         check("chatgpt provider + trimmed model persisted; compatible settings kept", s3.Cleanup.Provider == CleanupProvider.ChatGpt && s3.Cleanup.ChatGpt.Model == "model-gpt"
             && s3.Cleanup.Compatible == s2.Cleanup.Compatible && !File.Exists(Path.Combine(dir, "chatgpt-token.json")));
+
+        // クラウド文字起こし（T24）: 認識の選択・接続欄・コピー・消去・今回の認識の表示。
+        var winC = new Views.SettingsWindow(settings, protector, models, network, chatGpt, autostart, hk => (true, 0), () => null, () => "cpu", null, () => "クラウド");
+        winC.Show();
+        T FC<T>(string name) => (T)typeof(Views.SettingsWindow).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(winC)!;
+        void Call(string name) => typeof(Views.SettingsWindow).GetMethod(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(winC, null);
+        check("recognition defaults to local: local panel visible, cloud panel hidden",
+            FC<System.Windows.Controls.RadioButton>("_engLocal").IsChecked == true
+            && FC<System.Windows.Controls.StackPanel>("_localPanel").Visibility == System.Windows.Visibility.Visible
+            && FC<System.Windows.Controls.StackPanel>("_cloudPanel").Visibility == System.Windows.Visibility.Collapsed);
+        check("local execution backend and this-session recognition are shown separately",
+            FC<System.Windows.Controls.TextBlock>("_backend").Text == "ローカルの実際の実行方式: cpu"
+            && FC<System.Windows.Controls.TextBlock>("_lastRecognition").Text == "今回の認識: クラウド");
+        FC<System.Windows.Controls.RadioButton>("_engCloud").IsChecked = true;
+        check("cloud selected with nothing entered: panel shown and the reason is visible",
+            FC<System.Windows.Controls.StackPanel>("_cloudPanel").Visibility == System.Windows.Visibility.Visible
+            && FC<System.Windows.Controls.TextBlock>("_cStatus").Text.Contains("ベース URL が未設定"));
+        FC<System.Windows.Controls.TextBox>("_cUrl").Text = "https://transcription.example.com/v1/";
+        FC<System.Windows.Controls.TextBox>("_cModel").Text = "whisper";
+        check("cloud URL and model entered, no key yet (external host): the reason names the missing key",
+            FC<System.Windows.Controls.TextBlock>("_cStatus").Text.Contains("API キーが未設定"));
+        check("the actual request target is shown with the host",
+            FC<System.Windows.Controls.TextBlock>("_cTarget").Text.Contains("https://transcription.example.com/v1/audio/transcriptions")
+            && FC<System.Windows.Controls.TextBlock>("_cTarget").Text.Contains("transcription.example.com"));
+        FC<System.Windows.Controls.PasswordBox>("_cKey").Password = "sk-CLOUD-PLAINTEXT";
+        check("complete cloud settings: no blocking reason", FC<System.Windows.Controls.TextBlock>("_cStatus").Text.Length == 0);
+        Call("Save");
+        var cfgText = File.ReadAllText(settings.ConfigPath);
+        var sc = new JsonSettingsStore(settings.ConfigPath).Load().Settings;
+        check("cloud saved: engine=cloud, trimmed URL kept as typed, model, DPAPI key; no plaintext; local model setting untouched",
+            sc.Recognition.Engine == RecognitionEngine.Cloud && sc.Recognition.Cloud.BaseUrl == "https://transcription.example.com/v1/" && sc.Recognition.Cloud.Model == "whisper"
+            && protector.TryUnprotect(sc.Recognition.Cloud.ApiKeyDpapi, out var ck) && ck == "sk-CLOUD-PLAINTEXT"
+            && !cfgText.Contains("CLOUD-PLAINTEXT") && sc.Recognition.Model == s3.Recognition.Model && sc.Cleanup == s3.Cleanup);
+
+        // コピー: 保存済みの整文の互換接続から URL とキーだけ。モデルは複写せず、以後は連動しない。
+        var winD = new Views.SettingsWindow(settings, protector, models, network, chatGpt, autostart, hk => (true, 0), () => null, () => null, null);
+        winD.Show();
+        T FD<T>(string name) => (T)typeof(Views.SettingsWindow).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(winD)!;
+        FD<System.Windows.Controls.TextBox>("_cModel").Text = "stt-model";
+        typeof(Views.SettingsWindow).GetMethod("ApplyCopyFromCleanup", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(winD, null);
+        check("copy: URL replaced by the cleanup URL, model field untouched, nothing saved yet, selection unchanged",
+            FD<System.Windows.Controls.TextBox>("_cUrl").Text == s3.Cleanup.Compatible.BaseUrl && FD<System.Windows.Controls.TextBox>("_cModel").Text == "stt-model"
+            && new JsonSettingsStore(settings.ConfigPath).Load().Settings == sc && FD<System.Windows.Controls.RadioButton>("_engCloud").IsChecked == true);
+        typeof(Views.SettingsWindow).GetMethod("Save", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(winD, null);
+        var sd = new JsonSettingsStore(settings.ConfigPath).Load().Settings;
+        check("copy saved: cloud URL and key ciphertext equal the cleanup's; cloud model stays independent; cleanup unchanged",
+            sd.Recognition.Cloud.BaseUrl == s3.Cleanup.Compatible.BaseUrl && sd.Recognition.Cloud.ApiKeyDpapi == s3.Cleanup.Compatible.ApiKeyDpapi
+            && sd.Recognition.Cloud.Model == "stt-model" && s3.Cleanup.Compatible.Model != "stt-model" && sd.Cleanup == s3.Cleanup);
+
+        // 整文側を後から変えても認識の宛先は変わらない（独立保存）。
+        settings.Update(x => x with { Cleanup = x.Cleanup with { Compatible = new CompatibleCleanupSettings("https://other.example.com/v1", null, "m2") } });
+        check("changing the cleanup connection afterwards does not change the recognition destination",
+            settings.Current.Recognition.Cloud.BaseUrl == sd.Recognition.Cloud.BaseUrl && settings.Current.Recognition.Cloud.ApiKeyDpapi == sd.Recognition.Cloud.ApiKeyDpapi);
+
+        // 消去 → local へ戻して保存: 既定の接続は書き出さない。
+        var winE = new Views.SettingsWindow(settings, protector, models, network, chatGpt, autostart, hk => (true, 0), () => null, () => null, null);
+        winE.Show();
+        T FE<T>(string name) => (T)typeof(Views.SettingsWindow).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(winE)!;
+        typeof(Views.SettingsWindow).GetMethod("ClearCloudConnection", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(winE, null);
+        FE<System.Windows.Controls.RadioButton>("_engLocal").IsChecked = true;
+        typeof(Views.SettingsWindow).GetMethod("Save", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(winE, null);
+        var se = new JsonSettingsStore(settings.ConfigPath).Load().Settings;
+        var textE = File.ReadAllText(settings.ConfigPath);
+        check("cleared + local: engine local, cloud connection back to defaults, and no recognition.cloud / engine keys written",
+            se.Recognition.Engine == RecognitionEngine.Local && se.Recognition.Cloud.IsEmpty && !textE.Contains("\"cloud\"") && !textE.Contains("\"engine\""));
         return true;
     }
 }

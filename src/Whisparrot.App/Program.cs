@@ -32,6 +32,8 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--chatgpt-login") return Diagnostics.ChatGptLogin(args);
         if (args.Length > 0 && args[0] == "--chatgpt-status") return Diagnostics.ChatGptStatusProbe(args);
         if (args.Length > 0 && args[0] == "--chatgpt-logout") return Diagnostics.ChatGptLogout(args);
+        if (args.Length > 0 && args[0] == "--write-transcription-config") return Diagnostics.WriteTranscriptionConfig(args);
+        if (args.Length > 0 && args[0] == "--transcription-probe") return Diagnostics.TranscriptionProbe(args);
         if (args.Length > 0 && args[0] == "--pipeline-file") return Diagnostics.PipelineFile(args, resources);
 
         using var mutex = new Mutex(true, SingletonMutexName, out var created);

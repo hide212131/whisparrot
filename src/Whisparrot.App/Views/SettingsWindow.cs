@@ -8,6 +8,7 @@ using Whisparrot.Infrastructure.Audio;
 using Whisparrot.Infrastructure.ChatGpt;
 using Whisparrot.Infrastructure.Models;
 using Whisparrot.Infrastructure.Network;
+using Whisparrot.Infrastructure.Recognition;
 using Whisparrot.Infrastructure.Settings;
 
 namespace Whisparrot.App.Views;
@@ -27,6 +28,7 @@ internal sealed class SettingsWindow : Window
     private readonly Func<Hotkey, (bool Ok, int Error)> _tryHotkey;
     private readonly Func<Hotkey?> _adoptedHotkey;
     private readonly Func<string?> _backendText;
+    private readonly Func<string?>? _lastRecognitionText;
 
     private readonly CheckBox _ctrl = new() { Content = "Ctrl" }, _alt = new() { Content = "Alt" }, _shift = new() { Content = "Shift" }, _win = new() { Content = "Win" };
     private readonly ComboBox _key = new() { Width = 90 };
@@ -40,6 +42,20 @@ internal sealed class SettingsWindow : Window
     private readonly ProgressBar _progress = new() { Height = 10, Minimum = 0, Maximum = 100, Visibility = Visibility.Collapsed };
     private readonly TextBlock _backend = new();
     private CancellationTokenSource? _download;
+
+    private readonly RadioButton _engLocal = new() { Content = "ローカル（この PC で認識。音声は送信しません）", GroupName = "eng" };
+    private readonly RadioButton _engCloud = new() { Content = "クラウド（OpenAI 互換の文字起こし API へ音声を送信）", GroupName = "eng" };
+    private readonly StackPanel _localPanel = new() { Margin = new Thickness(20, 0, 0, 4) };
+    private readonly StackPanel _cloudPanel = new() { Margin = new Thickness(20, 0, 0, 4) };
+    private readonly TextBox _cUrl = new(), _cModel = new();
+    private readonly PasswordBox _cKey = new();
+    private readonly CheckBox _cClearKey = new() { Content = "保存済みの API キーを削除" };
+    private readonly TextBlock _cTarget = new() { TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
+    private readonly TextBlock _cKeyState = new() { TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
+    private readonly TextBlock _cStatus = new() { TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DarkOrange };
+    private readonly TextBlock _lastRecognition = new();
+    private string? _cCopiedKey;
+    private bool _cCopied;
 
     private readonly RadioButton _cleanOff = new() { Content = "OFF", GroupName = "clean" };
     private readonly RadioButton _cleanCompat = new() { Content = "OpenAI 互換エンドポイント", GroupName = "clean" };
@@ -71,10 +87,10 @@ internal sealed class SettingsWindow : Window
     private readonly TextBlock _error = new() { Foreground = System.Windows.Media.Brushes.Firebrick, TextWrapping = TextWrapping.Wrap };
 
     public SettingsWindow(SettingsService settings, ISecretProtector protector, ModelManager models, NetworkContext network, ChatGptAuthService chatGpt,
-        AutostartService autostart, Func<Hotkey, (bool Ok, int Error)> tryHotkey, Func<Hotkey?> adoptedHotkey, Func<string?> backendText, string? notice)
+        AutostartService autostart, Func<Hotkey, (bool Ok, int Error)> tryHotkey, Func<Hotkey?> adoptedHotkey, Func<string?> backendText, string? notice, Func<string?>? lastRecognitionText = null)
     {
         _settings = settings; _protector = protector; _models = models; _network = network; _chatGpt = chatGpt;
-        _autostart = autostart; _tryHotkey = tryHotkey; _adoptedHotkey = adoptedHotkey; _backendText = backendText;
+        _autostart = autostart; _tryHotkey = tryHotkey; _adoptedHotkey = adoptedHotkey; _backendText = backendText; _lastRecognitionText = lastRecognitionText;
 
         Title = "whisparrot 設定";
         Width = 520; Height = 700; MinWidth = 440;
@@ -172,7 +188,126 @@ internal sealed class SettingsWindow : Window
         items.Add(_progress);
         items.Add(new TextBlock { Text = "モデルはこのアプリの models フォルダへ保存され、SHA-256 を照合して使われます。", Foreground = System.Windows.Media.Brushes.DimGray, TextWrapping = TextWrapping.Wrap });
         items.Add(_backend);
-        return Group("ローカル認識", [.. items]);
+        foreach (var i in items) _localPanel.Children.Add(i);
+
+        _engLocal.Checked += (_, _) => UpdateEngineVisibility();
+        _engCloud.Checked += (_, _) => UpdateEngineVisibility();
+        _cUrl.TextChanged += (_, _) => { UpdateCloudTarget(); UpdateCloudStatus(); };
+        _cModel.TextChanged += (_, _) => UpdateCloudStatus();
+        _cKey.PasswordChanged += (_, _) =>
+        {
+            if (_cKey.Password.Length > 0) _cClearKey.IsChecked = false;
+            UpdateCloudStatus();
+        };
+        _cClearKey.Checked += (_, _) => UpdateCloudStatus();
+        _cClearKey.Unchecked += (_, _) => UpdateCloudStatus();
+        var copy = new Button { Content = "整文の互換接続からコピー", Padding = new Thickness(10, 1, 10, 1), Margin = new Thickness(0, 0, 8, 0) };
+        var clear = new Button { Content = "接続設定を消去", Padding = new Thickness(10, 1, 10, 1) };
+        copy.Click += (_, _) => OnCopyFromCleanup();
+        clear.Click += (_, _) => ClearCloudConnection();
+        var cloudButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
+        cloudButtons.Children.Add(copy); cloudButtons.Children.Add(clear);
+        _cKey.ToolTip = "保存済みの場合は空のままにすると維持されます";
+        System.Windows.Automation.AutomationProperties.SetName(_cUrl, "クラウド認識のベース URL");
+        System.Windows.Automation.AutomationProperties.SetName(_cKey, "クラウド認識の API キー");
+        System.Windows.Automation.AutomationProperties.SetName(_cModel, "クラウド認識のモデル名");
+        foreach (var e in new UIElement[]
+        {
+            Row("ベース URL", _cUrl),
+            new TextBlock { Text = "例: https://transcription.example.com/v1（/v1 などの API root まで含めて入力。末尾に /audio/transcriptions が加わります）", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray },
+            _cTarget,
+            Row("API キー", _cKey), _cKeyState, _cClearKey,
+            Row("モデル名", _cModel),
+            new TextBlock { Text = "例: whisper（接続先の公開名をそのまま入力します。名前の変換や存在確認はしません）", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray },
+            cloudButtons,
+            new TextBlock { Text = "コピーは URL と API キーだけを一度複写します（整文のモデルは複写せず、以後は連動しません。入力済みの内容は上書きされます）。保存するまで反映されません。", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray },
+            _cStatus,
+        }) _cloudPanel.Children.Add(e);
+
+        var notice = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Text = "クラウド認識を選ぶと、録音停止後に音声を指定した接続先へ送信します。接続先が LiteLLM 等のプロキシの場合、その先の文字起こしサービスへ転送される場合があります。整文 OFF でも音声は送信されます。ローカル認識では音声を送信しません。\n\n"
+                 + "短い発話向けです。音声ファイルの上限は 25 MB（約 13 分）、処理の期限は 60 秒です。文字起こしに失敗した音声は保存されず、もう一度話す必要があります。\n\n"
+                 + "接続先と転送先での保存・ログの扱いは、そのサービスの設定を確認してください。",
+        };
+        System.Windows.Automation.AutomationProperties.SetName(notice, "クラウド認識の音声送信に関する説明");
+        return Group("認識", _engLocal, _localPanel, _engCloud, _cloudPanel, notice, _lastRecognition);
+    }
+
+    private void UpdateEngineVisibility()
+    {
+        _localPanel.Visibility = _engLocal.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        _cloudPanel.Visibility = _engCloud.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        UpdateCloudTarget();
+        UpdateCloudStatus();
+    }
+
+    private void UpdateCloudTarget()
+    {
+        var target = CloudConnectionForm.RequestTarget(_cUrl.Text.Trim());
+        _cTarget.Text = target is null ? "" : $"実際の要求先: {target}（音声の送信先ホスト: {CompatibleEndpointUrl.DestinationHost(new Uri(target))}）";
+    }
+
+    /// <summary>保存済み / 入力 / 削除 / コピーのうち、保存時に使うキーの暗号文。優先順は 削除 → 入力 → コピー → 保存済み。</summary>
+    private string? ResolveCloudKey()
+    {
+        if (_cClearKey.IsChecked == true) return null;
+        if (_cKey.Password.Length > 0) return _protector.Protect(_cKey.Password);
+        if (_cCopied) return _cCopiedKey;
+        return _settings.Current.Recognition.Cloud.ApiKeyDpapi;
+    }
+
+    private CloudRecognitionSettings ReadCloudForm() => new(_cUrl.Text.Trim(), ResolveCloudKey(), _cModel.Text.Trim());
+
+    /// <summary>クラウドが選ばれているとき、今の入力のままでは録音を始められない理由を示す（ネットワークには触れない）。</summary>
+    private void UpdateCloudStatus()
+    {
+        if (_engCloud.IsChecked != true) { _cStatus.Text = ""; return; }
+        var saved = _settings.Current.Recognition.Cloud.ApiKeyDpapi is not null;
+        _cKeyState.Text = _cClearKey.IsChecked == true ? "API キー: 保存時に削除されます"
+            : _cKey.Password.Length > 0 ? "API キー: 入力済み（保存時に暗号化します）"
+            : _cCopied ? (_cCopiedKey is null ? "API キー: コピー元に保存がないため未設定になります" : "API キー: 整文の接続からコピー済み（保存時に反映）")
+            : saved ? "API キー: 保存済み（空のままなら維持されます）" : "API キー: 未設定";
+        RefreshClearKeyEnabled();
+        var reason = CloudConnectionForm.NotReadyReason(_settings.Current.Recognition with { Cloud = ReadCloudForm() }, _protector);
+        _cStatus.Text = reason is null ? "" : $"このままではクラウド認識を使えません: {reason}";
+    }
+
+    private void RefreshClearKeyEnabled() =>
+        _cClearKey.IsEnabled = _settings.Current.Recognition.Cloud.ApiKeyDpapi is not null || _cCopied;
+
+    /// <summary>保存済みの整文の互換接続から URL / キーを複写する（画面の入力だけを変え、保存はしない）。</summary>
+    private void OnCopyFromCleanup()
+    {
+        var hasInput = _cUrl.Text.Trim().Length > 0 || _cKey.Password.Length > 0 || _cCopied || _settings.Current.Recognition.Cloud.ApiKeyDpapi is not null && _cClearKey.IsChecked != true;
+        if (hasInput && MessageBox.Show(this, "現在のベース URL と API キーを、整文の互換接続の内容で上書きします。よろしいですか？", "whisparrot", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+        ApplyCopyFromCleanup();
+    }
+
+    private void ApplyCopyFromCleanup()
+    {
+        _error.Text = "";
+        var r = CloudConnectionForm.CopyFromCleanup(_settings.Current.Cleanup.Compatible, _protector);
+        if (!r.Ok) { _error.Text = r.Error!; return; }
+        _cUrl.Text = r.BaseUrl;
+        _cKey.Password = "";
+        _cClearKey.IsChecked = false;
+        _cCopied = true;
+        _cCopiedKey = r.KeyCipher;
+        UpdateCloudTarget();
+        UpdateCloudStatus();
+    }
+
+    /// <summary>三つの接続項目を既定（未設定）へ戻す。保存して初めて確定する。エンジンの選択は変えない。</summary>
+    private void ClearCloudConnection()
+    {
+        _error.Text = "";
+        _cUrl.Text = ""; _cModel.Text = ""; _cKey.Password = "";
+        _cCopied = false; _cCopiedKey = null;
+        _cClearKey.IsChecked = _settings.Current.Recognition.Cloud.ApiKeyDpapi is not null;
+        UpdateCloudTarget();
+        UpdateCloudStatus();
     }
 
     private UIElement BuildCleanup()
@@ -333,6 +468,11 @@ internal sealed class SettingsWindow : Window
 
         _insClipboard.IsChecked = true;
         _modelRadios[s.Recognition.Model].IsChecked = true;
+        _cUrl.Text = s.Recognition.Cloud.BaseUrl;
+        _cModel.Text = s.Recognition.Cloud.Model;
+        _engLocal.IsChecked = s.Recognition.Engine == RecognitionEngine.Local;
+        _engCloud.IsChecked = s.Recognition.Engine == RecognitionEngine.Cloud;
+        UpdateEngineVisibility();
 
         _cleanOff.IsChecked = s.Cleanup.Provider == CleanupProvider.Off;
         _cleanCompat.IsChecked = s.Cleanup.Provider == CleanupProvider.Compatible;
@@ -354,7 +494,9 @@ internal sealed class SettingsWindow : Window
         UpdateProxyAuthEnabled();
 
         _autostartBox.IsChecked = s.Autostart;
-        _backend.Text = "実際の実行方式: " + (_backendText() ?? "未実行");
+        // ローカルの実行方式（最後のローカル結果）と、直近のセッションの認識先は別に表示する（クラウドの使用でローカルの欄は変わらない）。
+        _backend.Text = "ローカルの実際の実行方式: " + (_backendText() ?? "未実行");
+        _lastRecognition.Text = "今回の認識: " + (_lastRecognitionText?.Invoke() ?? "未実行");
     }
 
     // ---- モデル ----
@@ -443,7 +585,12 @@ internal sealed class SettingsWindow : Window
         {
             Hotkey = hotkey,
             MicrophoneId = (_mic.SelectedItem as MicChoice)?.Id,
-            Recognition = cur.Recognition with { Model = _modelRadios.First(kv => kv.Value.IsChecked == true).Key },
+            Recognition = cur.Recognition with
+            {
+                Model = _modelRadios.First(kv => kv.Value.IsChecked == true).Key,
+                Engine = _engCloud.IsChecked == true ? RecognitionEngine.Cloud : RecognitionEngine.Local,
+                Cloud = ReadCloudForm(),
+            },
             Cleanup = cur.Cleanup with
             {
                 Provider = _cleanCompat.IsChecked == true ? CleanupProvider.Compatible : _cleanChatGpt.IsChecked == true ? CleanupProvider.ChatGpt : CleanupProvider.Off,

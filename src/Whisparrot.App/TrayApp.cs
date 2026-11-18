@@ -57,26 +57,38 @@ internal static class TrayApp
             Visible = true,
         };
 
+        // 直近のセッションの認識先（設定画面の「今回の認識」）。ローカルの実行方式欄とは別に持つ。
+        string? lastRecognition = null;
+        coordinator.BackendReported += b => lastRecognition = b == "cloud" ? "クラウド" : $"ローカル（{b}）";
+
         SettingsWindow? settingsWindow = null;
         void OpenSettings(string? notice = null)
         {
             if (settingsWindow is not null) { settingsWindow.Activate(); return; }
             settingsWindow = new SettingsWindow(settings, protector, models, network, chatGpt, autostart,
-                hk => (hotkey.TryReplace(hk, out var err), err), () => hotkey.Adopted, () => recognizer.LastBackend, notice);
+                hk => (hotkey.TryReplace(hk, out var err), err), () => hotkey.Adopted, () => recognizer.LastBackend, notice, () => lastRecognition);
             settingsWindow.Closed += (_, _) => settingsWindow = null;
             settingsWindow.Show();
             settingsWindow.Activate();
         }
 
+        System.Windows.Forms.ToolStripItem engineItem = null!;
         void UpdateTrayText()
         {
             var hk = hotkey.Adopted;
             var name = $"whisparrot {AppInfo.DisplayVersion}";
+            var cloud = settings.Current.Recognition.Engine == RecognitionEngine.Cloud;
             tray.Text = !settings.LoadResult.Usable ? $"{name}（設定エラー）"
-                : hk is null ? $"{name}（ホットキー未登録: トレイから操作）" : $"{name}（{hk.Display}）";
+                : hk is null ? $"{name}（ホットキー未登録: トレイから操作）" : $"{name}（{hk.Display}{(cloud ? "・クラウド認識" : "")}）";
+            // 音声の送信先を、設定を開かなくても確認できるようにする（設計 §9.1）。
+            var c = settings.Current.Recognition.Cloud;
+            var host = CompatibleEndpointUrl.Validate(c.BaseUrl, out var u) is null && u is not null ? CompatibleEndpointUrl.DestinationHost(u) : "接続先未設定";
+            engineItem.Text = cloud ? $"認識: クラウド（音声の送信先 {host}）" : "認識: ローカル（音声は送信しません）";
         }
 
         var menu = new System.Windows.Forms.ContextMenuStrip();
+        engineItem = menu.Items.Add("認識");
+        engineItem.Enabled = false;
         menu.Items.Add("設定", null, (_, _) => OpenSettings());
         var toggleItem = menu.Items.Add("開始 / 停止", null, (_, _) => coordinator.Toggle());
         var cancelItem = menu.Items.Add("取消", null, (_, _) => coordinator.Cancel());
@@ -102,12 +114,18 @@ internal static class TrayApp
         recorder.LevelChanged += level => app.Dispatcher.BeginInvoke(() => pill.PushLevel(level));
         coordinator.StateChanged += s => app.Dispatcher.BeginInvoke(() =>
         {
-            pill.ShowState(s.State);
+            pill.ShowState(s.State, s.Engine);
             retryItem.Visible = s.State == SessionState.Failed;
         });
+        // 失敗の通知は短く（3 秒以内）。クラウド認識の失敗は、通知をクリックして設定を開き原因を確認できる。
+        var balloonOpensSettings = false;
         coordinator.Noticed += n => app.Dispatcher.BeginInvoke(() =>
-            tray.ShowBalloonTip(2500, "whisparrot", n.Message,
-                n.Kind is NoticeKind.Error or NoticeKind.Warning ? System.Windows.Forms.ToolTipIcon.Warning : System.Windows.Forms.ToolTipIcon.Info));
+        {
+            balloonOpensSettings = n.Kind == NoticeKind.Error && settings.Current.Recognition.Engine == RecognitionEngine.Cloud;
+            tray.ShowBalloonTip(2500, "whisparrot", balloonOpensSettings ? n.Message + "（クリックで設定を開く）" : n.Message,
+                n.Kind is NoticeKind.Error or NoticeKind.Warning ? System.Windows.Forms.ToolTipIcon.Warning : System.Windows.Forms.ToolTipIcon.Info);
+        });
+        tray.BalloonTipClicked += (_, _) => { if (balloonOpensSettings) { balloonOpensSettings = false; OpenSettings(); } };
         hotkey.Pressed += () => coordinator.Toggle();
 
         // 適用範囲（設計 §3.2）: ホットキー・自動起動は設定画面の保存時に即時。モデル・マイクは次のセッションから。

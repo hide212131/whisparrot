@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 using Whisparrot.App.Windows;
 using Whisparrot.Core;
+using Whisparrot.Core.Settings;
 using static Whisparrot.App.Windows.NativeMethods;
 
 namespace Whisparrot.App.Views;
@@ -110,7 +111,7 @@ internal sealed class PillWindow : Window
     }
 
     /// <summary>UI スレッドから呼ぶ。Idle で隠し、それ以外は表示する（フォーカスは奪わない）。</summary>
-    public void ShowState(SessionState state)
+    public void ShowState(SessionState state, RecognitionEngine? engine = null)
     {
         switch (state)
         {
@@ -125,7 +126,7 @@ internal sealed class PillWindow : Window
                 Present();
                 break;
             case SessionState.Recognizing:
-                SetLabel("認識中", cancelEnabled: true);
+                SetLabel(engine == RecognitionEngine.Cloud ? "クラウド認識中" : "認識中", cancelEnabled: true);
                 Present();
                 break;
             case SessionState.Polishing:
@@ -151,6 +152,7 @@ internal sealed class PillWindow : Window
         _levels.Visibility = Visibility.Collapsed;
         _label.Visibility = Visibility.Visible;
         _label.Text = text;
+        AutomationProperties.SetName(_label, text);
         _stop.Visibility = Visibility.Collapsed;
         _cancel.IsEnabled = cancelEnabled;
     }

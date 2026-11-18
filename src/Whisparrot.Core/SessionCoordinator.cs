@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using Whisparrot.Core.Settings;
 
 namespace Whisparrot.Core;
 
@@ -16,8 +17,8 @@ public enum SessionState
     Failed,
 }
 
-/// <summary>UI が購読する状態のスナップショット。</summary>
-public sealed record SessionSnapshot(SessionState State, long SessionId, bool HasPendingText);
+/// <summary>UI が購読する状態のスナップショット。<paramref name="Engine"/> は進行中のセッションが録音開始時に固定した認識先（Idle では null）。</summary>
+public sealed record SessionSnapshot(SessionState State, long SessionId, bool HasPendingText, RecognitionEngine? Engine = null);
 
 public enum NoticeKind { Info, Warning, Error }
 
@@ -82,7 +83,7 @@ public sealed class SessionCoordinator : IDisposable
     /// <summary>認識が成功したときの実際の実行方式（設定画面の表示用）。</summary>
     public event Action<string>? BackendReported;
 
-    public SessionSnapshot Snapshot => new(_state, _sessionId, _pendingText is not null);
+    public SessionSnapshot Snapshot => new(_state, _sessionId, _pendingText is not null, _state == SessionState.Idle ? null : _recognize?.Engine);
 
     /// <summary>ホットキーまたはトレイの開始/停止。Idle なら録音開始、Recording なら停止。それ以外は無視。</summary>
     public void Toggle() => Post(new ToggleEvt());

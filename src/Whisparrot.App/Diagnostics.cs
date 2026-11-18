@@ -145,6 +145,9 @@ internal static partial class Diagnostics
         var repeat = int.Parse(Opt("--repeat") ?? "1");
         var cancelAfter = Opt("--cancel-after-ms") is { } c ? int.Parse(c) : -1;
         var backend = Opt("--backend") ?? "auto";
+        // --cancel-first-only: 取消は最初の 1 回だけ試し、以降の回は通常どおり最後まで通す（取消後の次セッション成功の確認用）。
+        var cancelFirstOnly = args.Contains("--cancel-first-only");
+        var showText = args.Contains("--show-text");
 
         var native = new NativeRuntime(resources, AppPaths.RuntimeCacheRoot, AppInfo.Version, NativeRuntime.CurrentRid());
         var order = backend == "cpu" ? new[] { "cpu" } : new[] { "vulkan", "cpu" };
@@ -170,13 +173,19 @@ internal static partial class Diagnostics
         var injector = new ConsoleInjector();
         // --use-settings のときは config.json の整文設定（cleanup.provider=compatible など）も実際に使う（T11 の結線の確認）。
         ITextPolisher? polisher = null;
+        IRecognitionSource? source = null;
         if (usedSettings is not null)
         {
             var protector = new Whisparrot.Infrastructure.Settings.DpapiSecretProtector();
             var cleanupNet = new Whisparrot.Infrastructure.Network.NetworkContext(() => Whisparrot.Infrastructure.Network.ProxyConfig.FromSettings(usedSettings.Current.Proxy, protector), Whisparrot.Infrastructure.Network.ProxyEnvironment.Capture());
             polisher = new Whisparrot.Infrastructure.Polish.SettingsTextPolisher(() => usedSettings.Current, protector, cleanupNet, ChatGptFor(args, usedSettings.ConfigPath, cleanupNet, protector));
+            // 認識先（local / cloud）も製品と同じ選択器で決める。cloud のときは実 CloudTranscriber・NetworkContext を通り、ローカルのワーカーは使わない。
+            source = new SettingsRecognizer(() => usedSettings.Current, protector, cleanupNet, recognizer);
         }
-        using var coordinator = new SessionCoordinator(new WavFileRecorder(wav), recognizer, injector, polisher);
+        var cloudSelected = usedSettings?.Current.Recognition.Engine == Whisparrot.Core.Settings.RecognitionEngine.Cloud;
+        using var coordinator = source is not null
+            ? new SessionCoordinator(new WavFileRecorder(wav), source, injector, polisher)
+            : new SessionCoordinator(new WavFileRecorder(wav), recognizer, injector, polisher);
 
         var t0 = Stopwatch.StartNew();
         var done = new ManualResetEventSlim();
@@ -197,8 +206,15 @@ internal static partial class Diagnostics
             recognizing.Reset();
             var sw = Stopwatch.StartNew();
             coordinator.Toggle();           // 録音開始
+            coordinator.FlushAsync().Wait();
+            if (coordinator.Snapshot.State == SessionState.Idle)
+            {
+                // 認識の構えが未完了（Unconfigured）で録音が始まらなかった。通知は上で出力済み。要求は一つも出ていない。
+                Console.WriteLine("recording_started=no");
+                continue;
+            }
             coordinator.Toggle();           // 停止 → 認識
-            if (cancelAfter >= 0)
+            if (cancelAfter >= 0 && (!cancelFirstOnly || i == 0))
             {
                 recognizing.Wait(TimeSpan.FromSeconds(10));
                 Thread.Sleep(cancelAfter);
@@ -215,8 +231,15 @@ internal static partial class Diagnostics
             Console.WriteLine($"run{i + 1}_total_ms={sw.ElapsedMilliseconds}");
         }
         Console.WriteLine($"worker_detail={recognizer.LastWorkerDetail}");
-        foreach (var t in injector.Injected) Console.WriteLine($"injected_text={t}");
-        if (cancelAfter < 0 && injector.Injected.Count != repeat) exit = 1;
+        // クラウド認識の実地確認では発話本文を出力に残さない（--show-text を指定したテスト用の固定音声のときだけ出す）。
+        Console.WriteLine($"injected_count={injector.Injected.Count}");
+        foreach (var t in injector.Injected)
+        {
+            Console.WriteLine($"injected_chars={t.Length}");
+            if (!cloudSelected || showText) Console.WriteLine($"injected_text={t}");
+        }
+        var expected = cancelAfter < 0 ? repeat : cancelFirstOnly ? repeat - 1 : 0;
+        if (injector.Injected.Count != expected) exit = 1;
         return exit;
     }
 
