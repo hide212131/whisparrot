@@ -78,7 +78,7 @@ function Restart-Cloud([string]$mode) { Stop-Mock 'cloud'; Start-Cloud $mode }
 function Start-Compat([string]$mode) { Start-Mock 'compat' 'mock-compat-server.ps1' $CompatPort $mode $compatLog $compatMode }
 
 function Requests([string]$path = $log) { if (Test-Path $path) { @(Get-Content -LiteralPath $path -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json }) } else { @() } }
-function Hits([string]$path = $log) { (Requests $path).Count }
+function Hits([string]$path = $log) { @(Requests $path).Count }
 function Clear-Logs { Remove-Item $log, $compatLog -ErrorAction SilentlyContinue }
 
 function Write-Config([string]$url, [string]$model, [bool]$withKey, [string]$engine = 'cloud') {
@@ -101,7 +101,7 @@ function Run-Pipeline([string]$wav, [string[]]$extra = @()) {
     $out = & $Exe --pipeline-file $wav --use-settings --config $cfg --show-text @extra 2>&1 | Out-String
     [pscustomobject]@{ Code = $LASTEXITCODE; Text = $out; Ms = $sw.ElapsedMilliseconds }
 }
-function Injected($r) { @($r.Text -split "`r?`n" | Where-Object { $_ -like 'injected_text=*' } | ForEach-Object { $_ -replace '^injected_text=', '' }) }
+function Injected($r) { , @($r.Text -split "`r?`n" | Where-Object { $_ -like 'injected_text=*' } | ForEach-Object { $_ -replace '^injected_text=', '' }) }
 function Kv($r, [string]$key) { if ($r.Text -match ("(?m)(?:^|\s)" + [regex]::Escape($key) + "=(\S+)")) { $Matches[1] } else { $null } }
 function States($r) { (@($r.Text -split "`r?`n" | ForEach-Object { if ($_ -match 'state=(\w+)') { $Matches[1] } }) -join '>') }
 function No-Leak($r) { -not $r.Text.Contains($dummyKey) -and -not $r.Text.Contains('echo Bearer') -and -not $r.Text.Contains('model=') }

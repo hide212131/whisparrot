@@ -66,10 +66,11 @@ function Parse-Multipart($req, [byte[]]$bytes) {
         $head = $p.Substring(0, $split)
         $body = $p.Substring($split + 4)
         if ($body.EndsWith("`r`n")) { $body = $body.Substring(0, $body.Length - 2) }
-        if (-not ($head -match 'name="([^"]*)"')) { continue }
+        # .NET writes the names unquoted (name=file; filename=speech.wav); quoted forms are accepted too.
+        if (-not ($head -match '(?i)(?<![a-z])name="?([^";\r\n]+)"?')) { continue }
         $name = $Matches[1]
         $result.fields += $name
-        if ($head -match 'filename="([^"]*)"') { $result.filename = $Matches[1] }
+        if ($head -match '(?i)(?<![a-z])filename="?([^";\r\n]+)"?') { $result.filename = $Matches[1] }
         if ($head -match '(?im)^Content-Type:\s*(\S+)') { $result.part_type = $Matches[1] }
         $raw = $latin1.GetBytes($body)
         if ($name -eq 'model') { $result.model = $utf8.GetString($raw) }
