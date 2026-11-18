@@ -251,6 +251,48 @@ public sealed class TranscriptionNetworkTests : IDisposable
         Assert.Empty(server.Requests);
     }
 
+    // ---- Windows 統合認証（SSH セッションでの実行が前提。docs/m5-report.md）----
+
+    private (TestTlsServer Server, TestConnectProxy Proxy, IntegratedAuthScript Script) AuthSetup(ChallengeMode mode)
+    {
+        var server = Server();
+        var script = new IntegratedAuthScript(mode, true);
+        var proxy = Track(new TestConnectProxy { IntegratedAuth = script });
+        proxy.Map["api.test"] = server.Port;
+        return (server, proxy, script);
+    }
+
+    [Fact]
+    public async Task Environment_mode_answers_an_ntlm_proxy_challenge_with_the_windows_logon_for_a_transcription_post()
+    {
+        var (server, proxy, script) = AuthSetup(ChallengeMode.Ntlm);
+        var net = Ctx(server, ProxyConfig.Environment, EnvWith(proxy.Url));
+        using var resp = await Post(net, "https://api.test/v1/audio/transcriptions", bearer: "DUMMY-KEY");
+        Assert.Equal(200, (int)resp.StatusCode);
+        Assert.Equal(3, script.Events.Count);
+        Assert.Equal("none", script.Events[0]);
+        Assert.Equal("ntlm:type1", script.Events[1]);
+        Assert.StartsWith("ntlm:type3(", script.Events[2]);
+        var api = Assert.Single(server.Requests);
+        Assert.Equal("Bearer DUMMY-KEY", api.Headers["Authorization"]);
+    }
+
+    [Fact]
+    public async Task Manual_windows_auth_ignores_the_username_field_and_a_rejected_handshake_never_goes_direct()
+    {
+        var (server, proxy, script) = AuthSetup(ChallengeMode.Ntlm);
+        var net = Ctx(server, new ProxyConfig(ProxyMode.Manual, proxy.Url, "ignored-user", "ignored-pw", ProxyManualAuth.Windows), ProxyEnvironment.Empty);
+        using (var resp = await Post(net, "https://api.test/x")) Assert.Equal(200, (int)resp.StatusCode);
+        Assert.DoesNotContain("user=24", script.Events[2]);
+
+        var (server2, proxy2, script2) = (Server(), (TestConnectProxy?)null, new IntegratedAuthScript(ChallengeMode.Ntlm, false));
+        proxy2 = Track(new TestConnectProxy { IntegratedAuth = script2 });
+        proxy2.Map["api.test"] = server2.Port;
+        var net2 = Ctx(server2, ProxyConfig.Environment, EnvWith(proxy2.Url));
+        await Assert.ThrowsAsync<HttpRequestException>(() => Post(net2, "https://api.test/x"));
+        Assert.Empty(server2.Requests);
+    }
+
     // ---- TLS ----
 
     [Fact]
