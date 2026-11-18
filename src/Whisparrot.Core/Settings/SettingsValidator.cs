@@ -16,6 +16,19 @@ public static class SettingsValidator
         if (s.Recognition.Language != AppSettings.Language) Add("recognition.language", $"{AppSettings.Language} だけ対応しています");
         if (s.Cleanup.TimeoutSeconds != AppSettings.CleanupTimeoutSeconds) Add("cleanup.timeout_seconds", $"{AppSettings.CleanupTimeoutSeconds} 固定です");
 
+        var cloud = s.Recognition.Cloud;
+        var useCloud = s.Recognition.Engine == RecognitionEngine.Cloud;
+        // 非選択でも型・URL 構文・暗号文形式は検証する。URL / モデルの必須条件だけ cloud 選択時に限る。
+        if (cloud.BaseUrl.Length > 0 || useCloud)
+        {
+            if (CompatibleEndpointUrl.Validate(cloud.BaseUrl, out _) is { } ce) Add("recognition.cloud.base_url", ce);
+        }
+        if (useCloud && cloud.Model.Trim().Length == 0) Add("recognition.cloud.model", "モデル名が必要です");
+        if (cloud.Model.Any(char.IsControl)) Add("recognition.cloud.model", "制御文字は使えません");
+        if (cloud.ApiKeyDpapi is { Length: 0 }) Add("recognition.cloud.api_key_dpapi", "空文字ではなく null を使ってください");
+        else if (cloud.ApiKeyDpapi is { } blob && !Convert.TryFromBase64String(blob, new byte[blob.Length], out _))
+            Add("recognition.cloud.api_key_dpapi", "Base64 の暗号文ではありません");
+
         var c = s.Cleanup.Compatible;
         if (c.BaseUrl.Length > 0 || s.Cleanup.Provider == CleanupProvider.Compatible)
         {

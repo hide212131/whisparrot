@@ -19,7 +19,23 @@ public static class ModelIds
     public static IReadOnlyList<string> All { get; } = [Base, Small, Medium, LargeV3Turbo];
 }
 
-public sealed record RecognitionSettings(string Model, string Language);
+/// <summary>第1段の認識先（クラウド文字起こし設計 §4）。既定はローカル。排他選択で、並列・自動復帰はしない。</summary>
+public enum RecognitionEngine { Local, Cloud }
+
+/// <summary>OpenAI 互換の音声文字起こし API への接続設定。整文の互換接続とは独立に保存し、共有しない。秘密は暗号文（Base64）だけを持つ。</summary>
+public sealed record CloudRecognitionSettings(string BaseUrl, string? ApiKeyDpapi, string Model)
+{
+    public static CloudRecognitionSettings Empty { get; } = new("", null, "");
+
+    /// <summary>全項目が既定（未設定）。設定ファイルには書き出さない。</summary>
+    public bool IsEmpty => BaseUrl.Length == 0 && ApiKeyDpapi is null && Model.Length == 0;
+}
+
+/// <summary><c>Model</c> / <c>Language</c> はローカル認識用（名称・位置を維持）。<c>Engine</c> がクラウドのときだけ <c>Cloud</c> を使う。</summary>
+public sealed record RecognitionSettings(string Model, string Language, RecognitionEngine Engine, CloudRecognitionSettings Cloud)
+{
+    public RecognitionSettings(string model, string language) : this(model, language, RecognitionEngine.Local, CloudRecognitionSettings.Empty) { }
+}
 
 /// <summary>秘密情報は暗号文（Base64）だけを持つ。平文のプロパティは存在しない。</summary>
 public sealed record CompatibleCleanupSettings(string BaseUrl, string? ApiKeyDpapi, string Model);

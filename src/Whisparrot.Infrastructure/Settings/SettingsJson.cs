@@ -73,10 +73,18 @@ public static class SettingsJson
             var mic = r.NullableString("microphone_id", d.MicrophoneId);
 
             var rec = r.Object("recognition");
-            var recognition = new RecognitionSettings(
-                rec.String("model", d.Recognition.Model),
-                rec.String("language", d.Recognition.Language));
+            var recModel = rec.String("model", d.Recognition.Model);
+            var recLanguage = rec.String("language", d.Recognition.Language);
+            var engine = rec.Enum("engine", d.Recognition.Engine, new Dictionary<string, RecognitionEngine>
+            {
+                ["local"] = RecognitionEngine.Local, ["cloud"] = RecognitionEngine.Cloud,
+            });
+            var rc = rec.Object("cloud");
+            var cloud = new CloudRecognitionSettings(
+                rc.String("base_url", ""), rc.NullableString("api_key_dpapi", null), rc.String("model", ""));
+            rc.Finish();
             rec.Finish();
+            var recognition = new RecognitionSettings(recModel, recLanguage, engine, cloud);
 
             var cl = r.Object("cleanup");
             var provider = cl.Enum("provider", d.Cleanup.Provider, new Dictionary<string, CleanupProvider>
@@ -169,6 +177,17 @@ public static class SettingsJson
             w.WriteStartObject("recognition");
             w.WriteString("model", s.Recognition.Model);
             w.WriteString("language", s.Recognition.Language);
+            // 追加キーは既定のとき書かない: 利用者が選ばない限り、この版が書く config.json に新しいキーを増やさない（旧版が未知キーとして拒否しないため）。
+            if (s.Recognition.Engine == RecognitionEngine.Cloud) w.WriteString("engine", "cloud");
+            if (!s.Recognition.Cloud.IsEmpty)
+            {
+                var cloud = s.Recognition.Cloud;
+                w.WriteStartObject("cloud");
+                if (cloud.BaseUrl.Length > 0) w.WriteString("base_url", cloud.BaseUrl);
+                if (cloud.ApiKeyDpapi is not null) w.WriteString("api_key_dpapi", cloud.ApiKeyDpapi);
+                if (cloud.Model.Length > 0) w.WriteString("model", cloud.Model);
+                w.WriteEndObject();
+            }
             w.WriteEndObject();
             w.WriteStartObject("cleanup");
             w.WriteString("provider", s.Cleanup.Provider switch { CleanupProvider.Off => "off", CleanupProvider.Compatible => "compatible", _ => "chatgpt" });

@@ -5,8 +5,11 @@ using Whisparrot.Infrastructure.Settings;
 
 namespace Whisparrot.Infrastructure.Network;
 
-/// <summary>全アプリ管理通信の用途（設計 §9.1）。これ以外の通信を作らない。</summary>
-public enum NetworkPurpose { Cleanup, Update, ModelDownload }
+/// <summary>
+/// 全アプリ管理通信の用途（設計 §9.1、クラウド文字起こし設計 §8）。これ以外の通信を作らない。
+/// <c>Transcription</c> はクラウド選択時の音声 multipart POST だけ。転送なし・60 秒・HTTPS（正確な loopback のみ HTTP）。
+/// </summary>
+public enum NetworkPurpose { Cleanup, Update, ModelDownload, Transcription }
 
 /// <summary>プロキシ設定の実効値（パスワードは復号済みの平文でメモリ上のみ）。</summary>
 public sealed record ProxyConfig(ProxyMode Mode, string ManualUrl, string ManualUsername, string? ManualPassword, ProxyManualAuth ManualAuth = ProxyManualAuth.Credentials)
@@ -123,10 +126,13 @@ public sealed class NetworkContext
             hook(sockets.SslOptions);
         }
 
-        var followRedirects = purpose != NetworkPurpose.Cleanup;
-        var effective = followRedirects
-            ? redirect ?? (purpose == NetworkPurpose.ModelDownload ? RedirectPolicy.HuggingFace : RedirectPolicy.GitHub)
-            : null;
+        // 転送を追うのは Update / ModelDownload だけ（明示列挙）。Cleanup / Transcription は呼出し側が policy を渡しても追わない。
+        var effective = purpose switch
+        {
+            NetworkPurpose.Update => redirect ?? RedirectPolicy.GitHub,
+            NetworkPurpose.ModelDownload => redirect ?? RedirectPolicy.HuggingFace,
+            _ => null,
+        };
         HttpMessageHandler handler = new PolicyHandler(purpose, effective, sockets);
         return new HttpClient(handler, disposeHandler: true)
         {
@@ -134,6 +140,7 @@ public sealed class NetworkContext
             {
                 NetworkPurpose.Update => TimeSpan.FromSeconds(30),
                 NetworkPurpose.Cleanup => TimeSpan.FromSeconds(15),
+                NetworkPurpose.Transcription => TimeSpan.FromSeconds(60),
                 _ => Timeout.InfiniteTimeSpan, // モデル取得は大きい。取消は CancellationToken で行う
             },
         };
@@ -185,9 +192,17 @@ public sealed class NetworkContext
         {
             if (uri is null || !uri.IsAbsoluteUri) throw new NetworkPolicyException("絶対 URL が必要です");
             if (uri.Scheme == Uri.UriSchemeHttps) return;
-            if (uri.Scheme == Uri.UriSchemeHttp && purpose == NetworkPurpose.Cleanup && RoutingProxy.IsLoopback(uri)) return;
-            throw new NetworkPolicyException("HTTPS 以外への通信は許可されていません（整文のローカルホスト HTTP を除く）");
+            if (uri.Scheme == Uri.UriSchemeHttp && AllowsPlainHttp(uri)) return;
+            throw new NetworkPolicyException("HTTPS 以外への通信は許可されていません（整文・文字起こしのローカルホスト HTTP を除く）");
         }
+
+        /// <summary>HTTP を許す用途の明示列挙。Cleanup は従来の loopback 判定のまま、Transcription は URL 検証と同じ正確な3形だけ。</summary>
+        private bool AllowsPlainHttp(Uri uri) => purpose switch
+        {
+            NetworkPurpose.Cleanup => RoutingProxy.IsLoopback(uri),
+            NetworkPurpose.Transcription => CompatibleEndpointUrl.IsExactLoopback(uri),
+            _ => false,
+        };
 
         private static bool IsRedirect(HttpStatusCode c) => c is HttpStatusCode.MovedPermanently or HttpStatusCode.Found
             or HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect;

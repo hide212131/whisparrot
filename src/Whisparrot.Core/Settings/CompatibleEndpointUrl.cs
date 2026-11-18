@@ -20,7 +20,7 @@ public static class CompatibleEndpointUrl
         if (u.Scheme == Uri.UriSchemeHttps) { }
         else if (u.Scheme == Uri.UriSchemeHttp)
         {
-            if (u.Host is not ("localhost" or "127.0.0.1" or "[::1]")) return "HTTP は localhost / 127.0.0.1 / ::1 だけ許可されます";
+            if (!IsExactLoopback(u)) return "HTTP は localhost / 127.0.0.1 / ::1 だけ許可されます";
         }
         else return "HTTPS（またはローカルホストの HTTP）だけ使えます";
 
@@ -28,6 +28,9 @@ public static class CompatibleEndpointUrl
         uri = u;
         return null;
     }
+
+    /// <summary>正確な loopback 宛（<c>localhost</c> / <c>127.0.0.1</c> / <c>::1</c> の3形だけ。127.0.0.0/8 全体などには広げない）。</summary>
+    public static bool IsExactLoopback(Uri uri) => uri.Host is "localhost" or "127.0.0.1" or "[::1]";
 
     /// <summary>送信先ホストの確認表示用（設計 §7.2: 保存時に送信先を画面で確認できる）。</summary>
     public static string DestinationHost(Uri uri) => uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
