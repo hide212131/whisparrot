@@ -174,7 +174,7 @@ internal static partial class Diagnostics
         {
             var protector = new Whisparrot.Infrastructure.Settings.DpapiSecretProtector();
             var cleanupNet = new Whisparrot.Infrastructure.Network.NetworkContext(() => Whisparrot.Infrastructure.Network.ProxyConfig.FromSettings(usedSettings.Current.Proxy, protector), Whisparrot.Infrastructure.Network.ProxyEnvironment.Capture());
-            polisher = new Whisparrot.Infrastructure.Polish.SettingsTextPolisher(() => usedSettings.Current, protector, cleanupNet);
+            polisher = new Whisparrot.Infrastructure.Polish.SettingsTextPolisher(() => usedSettings.Current, protector, cleanupNet, ChatGptFor(args, usedSettings.ConfigPath, cleanupNet, protector));
         }
         using var coordinator = new SessionCoordinator(new WavFileRecorder(wav), recognizer, injector, polisher);
 

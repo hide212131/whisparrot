@@ -5,6 +5,7 @@ using Whisparrot.Core;
 using Whisparrot.Core.Settings;
 using Whisparrot.Infrastructure;
 using Whisparrot.Infrastructure.Audio;
+using Whisparrot.Infrastructure.ChatGpt;
 using Whisparrot.Infrastructure.Models;
 using Whisparrot.Infrastructure.Network;
 using Whisparrot.Infrastructure.Polish;
@@ -41,7 +42,8 @@ internal static class TrayApp
             }));
         var recorder = new WasapiRecorder(() => settings.Current.MicrophoneId);
         var injector = new TextInjector();
-        var polisher = new SettingsTextPolisher(() => settings.Current, protector, network);
+        var chatGpt = new ChatGptAuthService(network, new ChatGptTokenStore(AppPaths.ChatGptTokenPath, protector));
+        var polisher = new SettingsTextPolisher(() => settings.Current, protector, network, chatGpt);
         var coordinator = new SessionCoordinator(recorder, recognizer, injector, polisher);
 
         var pill = new PillWindow();
@@ -57,7 +59,7 @@ internal static class TrayApp
         void OpenSettings(string? notice = null)
         {
             if (settingsWindow is not null) { settingsWindow.Activate(); return; }
-            settingsWindow = new SettingsWindow(settings, protector, models, network, autostart,
+            settingsWindow = new SettingsWindow(settings, protector, models, network, chatGpt, autostart,
                 hk => (hotkey.TryReplace(hk, out var err), err), () => hotkey.Adopted, () => recognizer.LastBackend, notice);
             settingsWindow.Closed += (_, _) => settingsWindow = null;
             settingsWindow.Show();

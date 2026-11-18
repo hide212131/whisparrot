@@ -12,6 +12,9 @@ public static class AppPaths
     /// <summary>設計 §8.1: exe の隣の config.json。</summary>
     public static string ConfigPath => Path.Combine(AppDirectory, "config.json");
 
+    /// <summary>設計 §8.1: ChatGPT の token は config とは別ファイル（内部定数。設定には出さない）。</summary>
+    public static string ChatGptTokenPath => Path.Combine(AppDirectory, "chatgpt-token.json");
+
     public static string ModelsDirectory => Path.Combine(AppDirectory, "models");
 
     /// <summary>M1 の暫定既定。モデル選択の設定化は T07 / T09。</summary>

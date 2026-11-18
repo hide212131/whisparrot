@@ -109,7 +109,7 @@ public sealed class CompatiblePolisher
         }
     }
 
-    private static async Task<byte[]?> ReadLimitedAsync(Stream stream, CancellationToken ct)
+    internal static async Task<byte[]?> ReadLimitedAsync(Stream stream, CancellationToken ct)
     {
         await using var _ = stream.ConfigureAwait(false);
         using var ms = new MemoryStream();

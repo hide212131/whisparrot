@@ -160,7 +160,7 @@ public sealed class SettingsTests : IDisposable
     }
 
     [Fact]
-    public void Unimplemented_chatgpt_provider_is_kept_as_is()
+    public void Chatgpt_provider_is_kept_as_is()
     {
         var r = SettingsJson.Parse("{\"schema_version\":1,\"cleanup\":{\"provider\":\"chatgpt\"}}", Now);
         Assert.Equal(CleanupProvider.ChatGpt, r.Settings.Cleanup.Provider);

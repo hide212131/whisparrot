@@ -1,5 +1,6 @@
 using Whisparrot.Core;
 using Whisparrot.Core.Settings;
+using Whisparrot.Infrastructure.ChatGpt;
 using Whisparrot.Infrastructure.Network;
 using Whisparrot.Infrastructure.Settings;
 
@@ -8,9 +9,9 @@ namespace Whisparrot.Infrastructure.Polish;
 /// <summary>
 /// 録音開始時の設定から整文の構えを作る（設計 §3.2: 設定変更は次のセッションから）。
 /// compatible で接続情報が足りない／使えないときは整文を試みさせず <see cref="PolishSetup.Unconfigured"/> にする。
-/// chatgpt は未実装（T13）なので同様に送信しない。設定値自体は変更しない。
+/// chatgpt は未ログイン・token 無効・モデル未指定なら同様に送信しない（勝手にブラウザも開かない）。設定値自体は変更しない。
 /// </summary>
-public sealed class SettingsTextPolisher(Func<AppSettings> settings, ISecretProtector protector, NetworkContext network) : ITextPolisher
+public sealed class SettingsTextPolisher(Func<AppSettings> settings, ISecretProtector protector, NetworkContext network, ChatGptAuthService chatGpt) : ITextPolisher
 {
     public PolishSetup Prepare()
     {
@@ -20,7 +21,7 @@ public sealed class SettingsTextPolisher(Func<AppSettings> settings, ISecretProt
             case CleanupProvider.Off:
                 return new PolishSetup.Off();
             case CleanupProvider.ChatGpt:
-                return new PolishSetup.Unconfigured("ChatGPT 経由の整文は未対応です");
+                return PrepareChatGpt(cleanup);
         }
 
         var c = cleanup.Compatible;
@@ -37,5 +38,14 @@ public sealed class SettingsTextPolisher(Func<AppSettings> settings, ISecretProt
         var timeout = TimeSpan.FromSeconds(cleanup.TimeoutSeconds);
         var polisher = new CompatiblePolisher(network, uri, c.Model.Trim(), key, timeout);
         return new PolishSetup.Ready(polisher.PolishAsync, timeout);
+    }
+
+    private PolishSetup PrepareChatGpt(CleanupSettings cleanup)
+    {
+        if (chatGpt.CheckReady() is { } reason) return new PolishSetup.Unconfigured(reason);
+        var model = cleanup.ChatGpt.Model.Trim();
+        if (model.Length == 0) return new PolishSetup.Unconfigured("ChatGPT のモデル名が未設定です。設定で指定してください");
+        var timeout = TimeSpan.FromSeconds(cleanup.TimeoutSeconds);
+        return new PolishSetup.Ready(new ChatGptPolisher(network, chatGpt, model, timeout).PolishAsync, timeout);
     }
 }

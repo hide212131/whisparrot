@@ -9,9 +9,9 @@ namespace Whisparrot.App;
 
 /// <summary>
 /// M3（T11）の非対話診断。
-///   --write-cleanup-config &lt;config.json&gt; --url U --model M [--key-env NAME] [--provider compatible|chatgpt|off]
+///   --write-cleanup-config &lt;config.json&gt; --url U --model M [--key-env NAME] [--provider compatible|chatgpt|off] [--chatgpt-model M]
 ///        整文設定を DPAPI つきで書いた config.json を作る（キーは環境変数から読み、画面にも出さない）
-///   --cleanup-probe --config &lt;config.json&gt; --text &lt;認識結果&gt;
+///   --cleanup-probe --config &lt;config.json&gt; --text &lt;認識結果&gt; [--chatgpt-token-file F] [--chatgpt-mock URL]
 ///        認識・録音を代役に置き、実際の整文クライアント・SessionCoordinator・NetworkContext で 1 セッションを通して
 ///        状態の遷移・通知・投入内容を出す（投入がちょうど 1 回かで合否）
 /// </summary>
@@ -40,7 +40,10 @@ internal static partial class Diagnostics
             Cleanup = s.Cleanup with
             {
                 Provider = provider,
-                Compatible = new CompatibleCleanupSettings(Arg(args, "--url") ?? "", protector.Protect(key), Arg(args, "--model") ?? ""),
+                Compatible = Arg(args, "--url") is { Length: > 0 } url
+                    ? new CompatibleCleanupSettings(url, protector.Protect(key), Arg(args, "--model") ?? "")
+                    : s.Cleanup.Compatible,
+                ChatGpt = new ChatGptCleanupSettings(Arg(args, "--chatgpt-model") ?? s.Cleanup.ChatGpt.Model),
             },
         });
         Console.WriteLine($"written provider={provider} key={(key is null ? "none" : "dpapi")}");
@@ -54,7 +57,7 @@ internal static partial class Diagnostics
         var protector = new DpapiSecretProtector();
         var settings = new SettingsService(new JsonSettingsStore(configPath));
         var network = new NetworkContext(() => ProxyConfig.FromSettings(settings.Current.Proxy, protector), ProxyEnvironment.Capture());
-        var polisher = new SettingsTextPolisher(() => settings.Current, protector, network);
+        var polisher = new SettingsTextPolisher(() => settings.Current, protector, network, ChatGptFor(args, configPath, network, protector));
         Console.WriteLine("polish_setup=" + polisher.Prepare() switch
         {
             PolishSetup.Off => "Off",
