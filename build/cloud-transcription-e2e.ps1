@@ -32,7 +32,11 @@ $script:fail = 0
 $script:total = 0
 $script:mocks = @{}
 
-function Check([string]$name, [bool]$pass) { $script:total++; if (-not $pass) { $script:fail++ }; Write-Host ("{0} {1}" -f ($(if ($pass) { 'PASS' } else { 'FAIL' })), $name) }
+function Check([string]$name, [bool]$pass, [string]$detail = '') {
+    $script:total++; if (-not $pass) { $script:fail++ }
+    Write-Host ("{0} {1}" -f ($(if ($pass) { 'PASS' } else { 'FAIL' })), $name)
+    if (-not $pass -and $detail) { Write-Host "     detail: $detail" }
+}
 
 function New-Wav([string]$path, [int]$samples, [bool]$sine) {
     $fs = [System.IO.File]::Create($path)
@@ -139,7 +143,7 @@ try {
         $kind = Kv $r 'failure_kind'; $status = Kv $r 'http_status'
         $redirectHits = @(Requests | Where-Object { $_.path -like '/redirected/*' }).Count
         Check "probe $mode : failed as $($expect[$mode][0]) / $($expect[$mode][1]), exit non-zero, 1 request (no retry), no leak" (
-            $r.Code -eq 1 -and (Kv $r 'recognition_outcome') -eq 'failed' -and $kind -eq $expect[$mode][0] -and $status -eq $expect[$mode][1] -and (Hits) -eq 1 -and $redirectHits -eq 0 -and (No-Leak $r))
+            $r.Code -eq 1 -and (Kv $r 'recognition_outcome') -eq 'failed' -and $kind -eq $expect[$mode][0] -and $status -eq $expect[$mode][1] -and (Hits) -eq 1 -and $redirectHits -eq 0 -and (No-Leak $r)) "code=$($r.Code) kind=$kind status=$status hits=$(Hits) redirectHits=$redirectHits leakfree=$(No-Leak $r)"
     }
     Set-Content $modeFile 'empty'; Clear-Logs
     $r = Run-Probe $tone

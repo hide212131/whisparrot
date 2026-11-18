@@ -56,7 +56,7 @@ function Wav-Summary([byte[]]$b) {
 
 function Parse-Multipart($req, [byte[]]$bytes) {
     $result = [ordered]@{ fields = @(); filename = $null; part_type = $null; model = $null; wav = $null }
-    if ($req.ContentType -notmatch 'boundary="?([^";]+)"?') { return $result }
+    if (-not ($req.ContentType -match 'boundary="?([^";]+)"?')) { return $result }
     $delim = '--' + $Matches[1]
     $text = $latin1.GetString($bytes)
     $parts = $text.Split(@($delim), [StringSplitOptions]::None)
@@ -66,7 +66,7 @@ function Parse-Multipart($req, [byte[]]$bytes) {
         $head = $p.Substring(0, $split)
         $body = $p.Substring($split + 4)
         if ($body.EndsWith("`r`n")) { $body = $body.Substring(0, $body.Length - 2) }
-        if ($head -notmatch 'name="([^"]*)"') { continue }
+        if (-not ($head -match 'name="([^"]*)"')) { continue }
         $name = $Matches[1]
         $result.fields += $name
         if ($head -match 'filename="([^"]*)"') { $result.filename = $Matches[1] }
