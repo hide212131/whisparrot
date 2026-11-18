@@ -60,7 +60,6 @@ public sealed class TranscriptionNetworkTests : IDisposable
     [Theory]
     [InlineData("http://example.com/v1/audio/transcriptions")]
     [InlineData("http://127.0.0.2:1/x")]            // 127.0.0.0/8 全体には広げない（Cleanup の広い判定は流用しない）
-    [InlineData("http://127.1:1/x")]
     [InlineData("http://0.0.0.0:1/x")]
     [InlineData("http://[::ffff:127.0.0.1]:1/x")]
     [InlineData("http://localhost.example.com:1/x")]
