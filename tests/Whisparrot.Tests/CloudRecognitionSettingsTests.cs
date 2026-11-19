@@ -41,6 +41,48 @@ public sealed class CloudRecognitionSettingsTests : IDisposable
         return set;
     }
 
+    // ---- 言語コード（M9）----
+
+    [Fact]
+    public void Cloud_language_defaults_to_ja_and_the_default_is_not_written()
+    {
+        Assert.Equal("ja", CloudRecognitionSettings.Empty.Language);
+        var json = Ser(WithCloud(RecognitionEngine.Cloud, new CloudRecognitionSettings("https://a.example/v1", null, "m")));
+        Assert.DoesNotContain("recognition.cloud.language", Paths(json));
+        var read = SettingsJson.Parse(json, Now);
+        Assert.Equal("ja", read.Settings.Recognition.Cloud.Language);
+    }
+
+    [Theory]
+    [InlineData("en")]
+    [InlineData("")]   // 自動判定は空文字列で明示的に残る
+    public void Cloud_language_round_trips_when_not_default(string code)
+    {
+        var json = Ser(WithCloud(RecognitionEngine.Cloud, new CloudRecognitionSettings("https://a.example/v1", null, "m", code)));
+        Assert.Contains("recognition.cloud.language", Paths(json));
+        Assert.Equal(code, SettingsJson.Parse(json, Now).Settings.Recognition.Cloud.Language);
+    }
+
+    [Theory]
+    [InlineData("ja", true)]
+    [InlineData("zh-CN", true)]
+    [InlineData("", true)]
+    [InlineData("j a", false)]
+    [InlineData("ja\r\nx", false)]
+    [InlineData("日本語", false)]
+    [InlineData("abcdefghijklmnopq", false)]
+    public void Language_code_validation(string code, bool valid) => Assert.Equal(valid, CloudRecognitionConfig.IsValidLanguage(code));
+
+    [Fact]
+    public void Prepare_carries_the_language_into_Ready_and_rejects_an_invalid_one()
+    {
+        var protector = new FakeProtector();
+        var ok = CloudRecognitionConfig.Prepare(WithCloud(RecognitionEngine.Cloud, new CloudRecognitionSettings("http://127.0.0.1:9/v1", null, "m", "en")).Recognition, protector);
+        Assert.Equal("en", Assert.IsType<CloudRecognitionConfig.Ready>(ok).Language);
+        var bad = CloudRecognitionConfig.Prepare(WithCloud(RecognitionEngine.Cloud, new CloudRecognitionSettings("http://127.0.0.1:9/v1", null, "m", "j a")).Recognition, protector);
+        Assert.IsType<CloudRecognitionConfig.Unconfigured>(bad);
+    }
+
     // この版より前（T13 マージ後）の既定設定が書いていたキーの全集合。追加キーが混ざらないことの固定に使う。
     private static readonly string[] LegacyKeys =
     [

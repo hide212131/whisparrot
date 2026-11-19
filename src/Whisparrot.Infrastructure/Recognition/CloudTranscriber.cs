@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Whisparrot.Core;
+using Whisparrot.Core.Settings;
 using Whisparrot.Infrastructure.Network;
 using Whisparrot.Infrastructure.Polish;
 
@@ -65,7 +66,7 @@ public sealed record TranscriptionResult
 }
 
 /// <summary>
-/// 設計 §7: <c>POST &lt;base_url&gt;/audio/transcriptions</c>（OpenAI 互換）。multipart は file（<c>speech.wav</c>、audio/wav）と model の 2 つだけ。
+/// 設計 §7: <c>POST &lt;base_url&gt;/audio/transcriptions</c>（OpenAI 互換）。multipart は file（<c>speech.wav</c>、audio/wav）と model、および言語コードが空でないときだけ language。
 /// 非空キーは <c>Authorization: Bearer</c> にだけ入れる。通信は <see cref="NetworkPurpose.Transcription"/> だけを通し、リダイレクトは追わず、再送もしない。
 /// 上限検査・WAV 化・接続・アップロード・応答の受信と解析まで、<see cref="Deadline"/>（既定 60 秒）の一つの期限で守る。
 /// どの失敗でも例外ではなく <see cref="TranscriptionResult"/> を返す（利用者の取消だけは <see cref="OperationCanceledException"/>）。
@@ -82,11 +83,13 @@ public sealed class CloudTranscriber
     private readonly Uri _endpoint;
     private readonly string _model;
     private readonly string? _apiKey;
+    private readonly string _language;
     private readonly TimeSpan _timeout;
 
     /// <param name="endpoint">POST 先そのもの（<see cref="CloudRecognitionConfig.Ready.Endpoint"/>）。</param>
-    public CloudTranscriber(NetworkContext network, Uri endpoint, string model, string? apiKey, TimeSpan? timeout = null)
+    public CloudTranscriber(NetworkContext network, Uri endpoint, string model, string? apiKey, TimeSpan? timeout = null, string language = CloudRecognitionSettings.DefaultLanguage)
     {
+        _language = language;
         _network = network;
         _endpoint = endpoint;
         _model = model;
@@ -118,6 +121,12 @@ public sealed class CloudTranscriber
             var model = new StringContent(_model);
             model.Headers.ContentType = null; // フィールドには Content-Type を付けない
             form.Add(model, "model");
+            if (_language.Length > 0)
+            {
+                var language = new StringContent(_language);
+                language.Headers.ContentType = null;
+                form.Add(language, "language");
+            }
 
             using var client = _network.CreateClient(NetworkPurpose.Transcription, timeout: Timeout.InfiniteTimeSpan);
             using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint) { Content = form };

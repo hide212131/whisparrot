@@ -97,7 +97,7 @@ internal static partial class Diagnostics
         Console.WriteLine($"state=Recognizing destination_host={CompatibleEndpointUrl.DestinationHost(ready.Endpoint)} audio_ms={(int)pcm.Duration.TotalMilliseconds}");
 
         var network = new NetworkContext(() => ProxyConfig.FromSettings(settings.Current.Proxy, protector), ProxyEnvironment.Capture());
-        var transcriber = new CloudTranscriber(network, ready.Endpoint, ready.Model, ready.ApiKey);
+        var transcriber = new CloudTranscriber(network, ready.Endpoint, ready.Model, ready.ApiKey, language: ready.Language);
         var sw = Stopwatch.StartNew();
         TranscriptionResult r;
         try { r = transcriber.TranscribeAsync(pcm, CancellationToken.None).GetAwaiter().GetResult(); }

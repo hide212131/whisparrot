@@ -55,8 +55,8 @@ public interface IRecognizer : IDisposable
 
 public enum InjectOutcome { Success, Failed }
 
-/// <summary>Route は実際に使った貼り付け経路（paste-message / send-input）。経路を持たない実装・失敗では null。</summary>
-public sealed record InjectResult(InjectOutcome Outcome, string? Message = null, string? Route = null);
+/// <summary>Route は実際に使った貼り付け経路（paste-message / send-input）、TargetClass は投入直前に解決した宛先のウィンドウクラス。持たない実装・失敗では null。</summary>
+public sealed record InjectResult(InjectOutcome Outcome, string? Message = null, string? Route = null, string? TargetClass = null);
 
 /// <summary>前景アプリへテキストを入れる。投入確定後は取消できない。</summary>
 public interface ITextInjector

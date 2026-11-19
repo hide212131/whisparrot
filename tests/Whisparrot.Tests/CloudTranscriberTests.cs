@@ -125,8 +125,8 @@ public sealed class CloudTranscriberTests : IDisposable
 
     private static NetworkContext Direct() => new(() => ProxyConfig.Environment, ProxyEnvironment.Empty);
 
-    private static CloudTranscriber Transcriber(string baseUrl, string? key = DummyKey, string model = "my-whisper", double seconds = 60, NetworkContext? net = null) =>
-        new(net ?? Direct(), new Uri(baseUrl.TrimEnd('/') + CloudRecognitionConfig.TranscriptionPath), model, key, TimeSpan.FromSeconds(seconds));
+    private static CloudTranscriber Transcriber(string baseUrl, string? key = DummyKey, string model = "my-whisper", double seconds = 60, NetworkContext? net = null, string language = "ja") =>
+        new(net ?? Direct(), new Uri(baseUrl.TrimEnd('/') + CloudRecognitionConfig.TranscriptionPath), model, key, TimeSpan.FromSeconds(seconds), language);
 
     private static PcmAudio Audio(int samples = 16000) => new(Enumerable.Range(0, samples).Select(i => (float)Math.Sin(i / 20.0) * 0.5f).ToArray());
 
@@ -158,7 +158,7 @@ public sealed class CloudTranscriberTests : IDisposable
     }
 
     [Fact]
-    public async Task Request_is_a_multipart_post_with_only_file_and_model()
+    public async Task Request_is_a_multipart_post_with_file_model_and_the_default_language()
     {
         var server = Server();
         var pcm = Audio();
@@ -172,7 +172,7 @@ public sealed class CloudTranscriberTests : IDisposable
         Assert.Equal("Bearer " + DummyKey, req.Headers["Authorization"]);
 
         var parts = ParseMultipart(req);
-        Assert.Equal(2, parts.Count);
+        Assert.Equal(3, parts.Count);
         var file = parts.Single(p => p.Disposition.Contains("name=file"));
         Assert.Contains("filename=speech.wav", file.Disposition);
         Assert.Equal("Content-Type: audio/wav", file.ContentType);
@@ -181,9 +181,33 @@ public sealed class CloudTranscriberTests : IDisposable
         var model = parts.Single(p => p.Disposition.Contains("name=model"));
         Assert.Equal("my-whisper", Encoding.UTF8.GetString(model.Data));
         Assert.Null(model.ContentType);
-        // language / response_format / temperature / prompt / stream などは送らない
-        foreach (var banned in new[] { "language", "response_format", "temperature", "prompt", "stream", "timestamp" })
+        var language = parts.Single(p => p.Disposition.Contains("name=language"));
+        Assert.Equal("ja", Encoding.UTF8.GetString(language.Data));
+        Assert.Null(language.ContentType);
+        // response_format / temperature / prompt / stream などは送らない
+        foreach (var banned in new[] { "response_format", "temperature", "prompt", "stream", "timestamp" })
             Assert.DoesNotContain($"name={banned}", string.Join('\n', parts.Select(p => p.Disposition)));
+    }
+
+    [Theory]
+    [InlineData("en")]
+    [InlineData("zh-CN")]
+    public async Task A_configured_language_code_is_sent_as_entered(string code)
+    {
+        var server = Server();
+        await Transcriber(server.BaseUrl, language: code).TranscribeAsync(Audio(), CancellationToken.None);
+        var parts = ParseMultipart(Assert.Single(server.Requests));
+        Assert.Equal(code, Encoding.UTF8.GetString(parts.Single(p => p.Disposition.Contains("name=language")).Data));
+    }
+
+    [Fact]
+    public async Task An_empty_language_code_omits_the_language_field_entirely()
+    {
+        var server = Server();
+        await Transcriber(server.BaseUrl, language: "").TranscribeAsync(Audio(), CancellationToken.None);
+        var parts = ParseMultipart(Assert.Single(server.Requests));
+        Assert.Equal(2, parts.Count);
+        Assert.DoesNotContain("name=language", string.Join('\n', parts.Select(p => p.Disposition)));
     }
 
     [Fact]

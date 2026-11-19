@@ -23,7 +23,7 @@ public sealed class SettingsRecognizer(
         {
             case CloudRecognitionConfig.Ready ready:
                 var deadline = cloudDeadline ?? CloudTranscriber.Deadline;
-                var transcriber = new CloudTranscriber(network, ready.Endpoint, ready.Model, ready.ApiKey, deadline);
+                var transcriber = new CloudTranscriber(network, ready.Endpoint, ready.Model, ready.ApiKey, deadline, ready.Language);
                 return new RecognitionSetup.Ready(RecognitionEngine.Cloud, transcriber.RecognizeAsync, deadline);
             case CloudRecognitionConfig.Unconfigured u:
                 return new RecognitionSetup.Unconfigured(u.Reason);

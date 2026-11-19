@@ -81,7 +81,8 @@ public static class SettingsJson
             });
             var rc = rec.Object("cloud");
             var cloud = new CloudRecognitionSettings(
-                rc.String("base_url", ""), rc.NullableString("api_key_dpapi", null), rc.String("model", ""));
+                rc.String("base_url", ""), rc.NullableString("api_key_dpapi", null), rc.String("model", ""),
+                rc.String("language", CloudRecognitionSettings.DefaultLanguage));
             rc.Finish();
             rec.Finish();
             var recognition = new RecognitionSettings(recModel, recLanguage, engine, cloud);
@@ -186,6 +187,7 @@ public static class SettingsJson
                 if (cloud.BaseUrl.Length > 0) w.WriteString("base_url", cloud.BaseUrl);
                 if (cloud.ApiKeyDpapi is not null) w.WriteString("api_key_dpapi", cloud.ApiKeyDpapi);
                 if (cloud.Model.Length > 0) w.WriteString("model", cloud.Model);
+                if (cloud.Language != CloudRecognitionSettings.DefaultLanguage) w.WriteString("language", cloud.Language); // 空（自動判定）も明示的に残す
                 w.WriteEndObject();
             }
             w.WriteEndObject();

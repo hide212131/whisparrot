@@ -6,8 +6,10 @@ namespace Whisparrot.App.Windows;
 
 /// <summary>
 /// クリップボード方式の投入（設計 §10.1）。元の内容を退避 → テキスト設定 → 貼り付け → 復元。
-/// 貼り付けは二段構え: 主経路は前景スレッドのフォーカス中コントロールへ WM_PASTE を同期送信する（キーボードフックを通らないため、
-/// キーリマッパの再定義に左右されない）。宛先が得られない・送信が失敗／タイムアウトした場合だけ、予備経路の SendInput（Ctrl+V）へ落ちる。
+/// 貼り付けの経路は、投入の直前に解決したフォーカス中コントロールのクラスで振り分ける。標準のテキスト編集クラス（Edit / RichEdit 系 / Scintilla）は
+/// WM_PASTE を同期送信する（キーボードフックを通らないため、キーリマッパの再定義に左右されない）。それ以外（GPUI 等のカスタム描画は、
+/// 最上位ウィンドウへ WM_PASTE が届いても無視されるため）は SendInput（Ctrl+V）が主経路。標準クラスで宛先が得られない・送信が失敗／タイムアウトした場合、
+/// および宛先が全く解決できない場合は、SendInput へ落ちる。
 /// Enter は送らない。クリップボードは STA の専用スレッドで扱う。
 /// 退避は HGLOBAL 形式（テキスト / HTML / RTF / HDROP 等）を形式ごとに独立して行い、取得できない形式・
 /// バイト複製できない GDI ハンドル形式（CF_ENHMETAFILE 等）はその形式だけを飛ばす（飛ばした形式は復元されない）。
@@ -37,10 +39,26 @@ internal sealed class TextInjector : ITextInjector
     {
         public const string PasteMessage = "paste-message";
         public const string SendInput = "send-input";
+        public const string None = "none";
     }
 
-    /// <summary>貼り付け段の結果。Route は実際に送信を試みた最後の経路。</summary>
-    internal readonly record struct PasteSend(bool Sent, string Route);
+    /// <summary>貼り付け段の結果。Route は実際に送信を試みた最後の経路。Error があれば何も送らずに中止した理由（利用者向け文言）。</summary>
+    internal readonly record struct PasteSend(bool Sent, string Route, string? Error = null, string? TargetClass = null);
+
+    internal enum TargetKind { StandardEdit, CustomDrawn }
+
+    /// <summary>
+    /// WM_PASTE で確実に貼り付けられる標準のテキスト編集クラス。実測で確認したのは Edit と RichEdit 系（メモ帳の RichEditD2DPT を含む）。
+    /// Scintilla は WM_PASTE を実装する広く使われる編集コントロールとして加えた。これ以外はカスタム描画とみなす。
+    /// </summary>
+    internal static TargetKind Classify(string? windowClass)
+    {
+        if (string.IsNullOrEmpty(windowClass)) return TargetKind.CustomDrawn;
+        if (windowClass.Equals("Edit", StringComparison.OrdinalIgnoreCase)
+            || windowClass.Equals("Scintilla", StringComparison.OrdinalIgnoreCase)
+            || windowClass.StartsWith("RichEdit", StringComparison.OrdinalIgnoreCase)) return TargetKind.StandardEdit;
+        return TargetKind.CustomDrawn;
+    }
 
     internal static bool TryParseStrategy(string? value, out PasteStrategy strategy)
     {
@@ -102,17 +120,19 @@ internal sealed class TextInjector : ITextInjector
         if (!ForegroundIsExternal()) return Fail("入力先のウィンドウが見つかりません");
         if (!WaitModifiersReleased()) return Fail("修飾キーが押されたままです");
 
-        return InjectClipboard(text, () => PasteStep(PasteStrategy.Auto, SendPasteMessage, SendCtrlV));
+        return InjectClipboard(text, () => PasteToForeground(PasteStrategy.Auto, null));
     }
 
     /// <summary>
-    /// 貼り付け段の経路選択。Auto は paste-message を先に試し、宛先なし／失敗なら send-input へ落ちる。
+    /// 貼り付け段の経路選択。Auto は宛先クラスで振り分ける: 標準編集クラス（または宛先未解決 = kind が null）は paste-message を先に試し、
+    /// 宛先なし／失敗なら send-input へ落ちる。カスタム描画クラスは send-input だけ（WM_PASTE は届いても無視されうる）。
     /// 強制指定（診断用）は片方だけを使い、落ちない。メッセージ送信が時間切れになった場合、対象が後で処理して
     /// 予備経路と二重に貼り付ける可能性は残る（切り分けられない）。
     /// </summary>
-    internal static PasteSend PasteStep(PasteStrategy strategy, Func<MessageResult> sendMessage, Func<bool> sendKeys, Action<string>? trace = null)
+    internal static PasteSend PasteStep(PasteStrategy strategy, Func<MessageResult> sendMessage, Func<bool> sendKeys, Action<string>? trace = null, TargetKind? kind = null)
     {
-        if (strategy != PasteStrategy.SendInput)
+        var viaMessage = strategy == PasteStrategy.PasteMessage || (strategy == PasteStrategy.Auto && kind != TargetKind.CustomDrawn);
+        if (viaMessage)
         {
             var m = sendMessage();
             trace?.Invoke($"paste_message={m}");
@@ -120,15 +140,27 @@ internal sealed class TextInjector : ITextInjector
             if (strategy == PasteStrategy.PasteMessage) return new PasteSend(false, Routes.PasteMessage);
             trace?.Invoke("fallback=send-input");
         }
+        else if (strategy == PasteStrategy.Auto) trace?.Invoke("route_by_class=send-input");
         return new PasteSend(sendKeys(), Routes.SendInput);
     }
 
-    /// <summary>前景スレッドのフォーカス中コントロール（取れなければ前景ウィンドウ）へ WM_PASTE を同期送信する。</summary>
-    private static MessageResult SendPasteMessage()
+    /// <summary>
+    /// 投入の直前（クリップボードへ設定した後）に宛先を解決して貼り付ける。解決結果が自プロセス・シェル・デスクトップなら何も送らず中止する。
+    /// 宛先が全く得られないときは従来どおり send-input へ落ちる。
+    /// </summary>
+    private static PasteSend PasteToForeground(PasteStrategy strategy, Action<string>? trace)
     {
-        var target = ResolvePasteTarget();
-        if (target == IntPtr.Zero) return MessageResult.NoTarget;
-        return SendPasteMessageTo(target);
+        var target = ResolveTarget();
+        TargetKind? kind = null;
+        if (target is { } t)
+        {
+            if (!IsExternalWindow(t.Foreground)) return new PasteSend(false, Routes.None, "入力先のウィンドウが見つかりません");
+            kind = Classify(t.TargetClass);
+            trace?.Invoke($"target process={t.Process} foreground_class={t.ForegroundClass} focus={(t.HasFocusControl ? t.FocusClass : "none")} target_class={t.TargetClass} hosted_editor={t.Hosted} kind={kind}");
+        }
+        else trace?.Invoke("target=none");
+        var r = PasteStep(strategy, () => target is { } x ? SendPasteMessageTo(x.Target) : MessageResult.NoTarget, SendCtrlV, trace, kind);
+        return r with { TargetClass = target?.TargetClass };
     }
 
     internal static MessageResult SendPasteMessageTo(IntPtr hwnd)
@@ -137,14 +169,62 @@ internal sealed class TextInjector : ITextInjector
         return r == IntPtr.Zero ? MessageResult.Failed : MessageResult.Delivered;
     }
 
-    private static IntPtr ResolvePasteTarget()
+    /// <summary>
+    /// 投入直前に解決した宛先。Focus は前景スレッドのフォーカス中コントロール（無ければ Zero）。Target は WM_PASTE の宛先で、通常は Focus（無ければ前景ウィンドウ）。
+    /// Focus が XAML アイランドの入力サイト（<see cref="InputSiteClass"/>）のときは、実際の編集コントロールがその外側のウィンドウ木にあるので、
+    /// 前景ウィンドウ内で可視の標準編集コントロールがちょうど 1 つだけなら Target をそれにする（Hosted = true）。
+    /// </summary>
+    internal readonly record struct PasteTarget(IntPtr Foreground, IntPtr Focus, IntPtr Target, string ForegroundClass, string FocusClass, string TargetClass, string Process, bool Hosted)
+    {
+        public bool HasFocusControl => Focus != IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// WinUI / XAML アイランドの入力サイト。新しいメモ帳では、キー入力の受け手が実際には内側の RichEdit でも、Win32 のフォーカスがこのクラスに見える状態があり
+    /// （実測: 新規ウィンドウ直後は常に、その後も交互に）、このとき WM_PASTE を送っても無視される。
+    /// </summary>
+    internal const string InputSiteClass = "InputSiteWindowClass";
+
+    private static PasteTarget? ResolveTarget()
     {
         var fg = GetForegroundWindow();
-        if (fg == IntPtr.Zero) return IntPtr.Zero;
-        var tid = GetWindowThreadProcessId(fg, out _);
+        if (fg == IntPtr.Zero) return null;
+        var tid = GetWindowThreadProcessId(fg, out var pid);
         var info = new GUITHREADINFO { cbSize = (uint)Marshal.SizeOf<GUITHREADINFO>() };
-        if (tid != 0 && GetGUIThreadInfo(tid, ref info) && info.hwndFocus != IntPtr.Zero) return info.hwndFocus;
-        return fg;
+        var focus = tid != 0 && GetGUIThreadInfo(tid, ref info) ? info.hwndFocus : IntPtr.Zero;
+        string process;
+        try { process = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; }
+        catch { process = "unknown"; }
+        var fgClass = ClassOf(fg);
+        var focusClass = focus != IntPtr.Zero ? ClassOf(focus) : "";
+        var target = focus != IntPtr.Zero ? focus : fg;
+        var targetClass = focus != IntPtr.Zero ? focusClass : fgClass;
+        var hosted = false;
+        if (focusClass == InputSiteClass && FindVisibleStandardEdit(fg) is { } edit)
+        {
+            target = edit.Hwnd; targetClass = edit.Class; hosted = true;
+        }
+        return new PasteTarget(fg, focus, target, fgClass, focusClass, targetClass, process, hosted);
+    }
+
+    /// <summary>top の子孫のうち可視（親も可視）な標準編集コントロール。ちょうど 1 つのときだけ返す（複数・なしは曖昧なので null）。</summary>
+    internal static (IntPtr Hwnd, string Class)? FindVisibleStandardEdit(IntPtr top, Func<IntPtr, bool>? isVisible = null)
+    {
+        isVisible ??= IsWindowVisible;
+        var found = new List<(IntPtr, string)>();
+        EnumChildWindows(top, (h, _) =>
+        {
+            if (isVisible(h) && ClassOf(h) is var c && Classify(c) == TargetKind.StandardEdit) found.Add((h, c));
+            return true;
+        }, IntPtr.Zero);
+        return found.Count == 1 ? found[0] : null;
+    }
+
+    private static string ClassOf(IntPtr hwnd)
+    {
+        var cls = new System.Text.StringBuilder(256);
+        GetClassNameW(hwnd, cls, cls.Capacity);
+        return cls.ToString();
     }
 
     /// <summary>
@@ -186,10 +266,11 @@ internal sealed class TextInjector : ITextInjector
         var ourSequence = GetClipboardSequenceNumber();
         trace?.Invoke($"sequence_after_set={ourSequence}");
 
-        var (sent, route) = paste();
+        var pasted = paste();
+        var (sent, route) = (pasted.Sent, pasted.Route);
         trace?.Invoke($"route={route}");
         trace?.Invoke($"paste_sent={sent}");
-        var wait = route == Routes.PasteMessage ? messageGrace ?? PasteMessageGrace : grace ?? PasteGrace;
+        var wait = pasted.Error != null ? TimeSpan.Zero : route == Routes.PasteMessage ? messageGrace ?? PasteMessageGrace : grace ?? PasteGrace;
         if (wait > TimeSpan.Zero) Thread.Sleep(wait);
 
         // 復元: 自分が設定してから変わっていなければ戻す。別のコピーがあればそちらを優先する。
@@ -210,8 +291,9 @@ internal sealed class TextInjector : ITextInjector
         {
             CloseClipboard();
         }
-        if (sent) return new InjectResult(InjectOutcome.Success, Route: route);
-        return new InjectResult(InjectOutcome.Failed, route == Routes.PasteMessage ? "貼り付けメッセージを送れませんでした" : "キー入力を送れませんでした", route);
+        if (pasted.Error != null) return new InjectResult(InjectOutcome.Failed, pasted.Error);
+        if (sent) return new InjectResult(InjectOutcome.Success, Route: route, TargetClass: pasted.TargetClass);
+        return new InjectResult(InjectOutcome.Failed, route == Routes.PasteMessage ? "貼り付けメッセージを送れませんでした" : "キー入力を送れませんでした", route, pasted.TargetClass);
     }
 
     /// <summary>
@@ -334,9 +416,10 @@ internal sealed class TextInjector : ITextInjector
             if (!external) { write("result=Failed 入力先のウィンドウが見つかりません"); return; }
             if (!WaitModifiersReleased()) { write("result=Failed 修飾キーが押されたままです"); return; }
             write($"inject_text_length={ProbeText.Length}");
-            var r = InjectClipboard(ProbeText, () => PasteStep(strategy, SendPasteMessage, SendCtrlV, write),
+            var r = InjectClipboard(ProbeText, () => PasteToForeground(strategy, write),
                 s => write($"skipped_formats={FormatSkipped(s)}"), grace, write, messageGrace);
             write($"route_used={r.Route ?? "none"}");
+            write($"target_class_used={(string.IsNullOrEmpty(r.TargetClass) ? "none" : r.TargetClass)}");
             write($"result={r.Outcome}{(r.Message is { } m ? " " + m : "")}");
             if (r.Outcome == InjectOutcome.Success) exit = 0;
         }) { IsBackground = true };
@@ -346,27 +429,22 @@ internal sealed class TextInjector : ITextInjector
         return exit;
     }
 
-    private static string DescribeForeground()
-    {
-        var hwnd = GetForegroundWindow();
-        if (hwnd == IntPtr.Zero) return "none";
-        GetWindowThreadProcessId(hwnd, out var pid);
-        string process;
-        try { process = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; }
-        catch { process = "unknown"; }
-        var cls = new System.Text.StringBuilder(256);
-        GetClassNameW(hwnd, cls, cls.Capacity);
-        return $"process={process} class={cls}";
-    }
+    private static string DescribeForeground() =>
+        ResolveTarget() is { } t ? $"process={t.Process} class={t.ForegroundClass}" : "none";
 
-    private static string DescribeTarget()
-    {
-        var t = ResolvePasteTarget();
-        if (t == IntPtr.Zero) return "none";
-        var cls = new System.Text.StringBuilder(256);
-        GetClassNameW(t, cls, cls.Capacity);
-        return $"class={cls} is_foreground={t == GetForegroundWindow()}";
-    }
+    /// <summary>診断用: フォーカス中コントロール（hwndFocus）の有無とクラス、宛先クラス。タイトルは出さない。</summary>
+    private static string DescribeTarget() =>
+        ResolveTarget() is { } t
+            ? $"focus={(t.HasFocusControl ? "class=" + t.FocusClass : "none")} target_class={t.TargetClass} hosted_editor={t.Hosted} target_is_foreground={t.Target == t.Foreground} kind={Classify(t.TargetClass)}"
+            : "none";
+
+    private delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr parent, EnumChildProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassNameW(IntPtr hWnd, System.Text.StringBuilder name, int maxCount);
@@ -376,9 +454,10 @@ internal sealed class TextInjector : ITextInjector
 
     private static InjectResult Fail(string message) => new(InjectOutcome.Failed, message);
 
-    private static bool ForegroundIsExternal()
+    private static bool ForegroundIsExternal() => IsExternalWindow(GetForegroundWindow());
+
+    private static bool IsExternalWindow(IntPtr hwnd)
     {
-        var hwnd = GetForegroundWindow();
         if (hwnd == IntPtr.Zero || hwnd == GetShellWindow() || hwnd == GetDesktopWindow()) return false;
         GetWindowThreadProcessId(hwnd, out var pid);
         return pid != Environment.ProcessId;

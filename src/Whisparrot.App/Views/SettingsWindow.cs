@@ -47,7 +47,7 @@ internal sealed class SettingsWindow : Window
     private readonly RadioButton _engCloud = new() { Content = "クラウド（OpenAI 互換の文字起こし API へ音声を送信）", GroupName = "eng" };
     private readonly StackPanel _localPanel = new() { Margin = new Thickness(20, 0, 0, 4) };
     private readonly StackPanel _cloudPanel = new() { Margin = new Thickness(20, 0, 0, 4) };
-    private readonly TextBox _cUrl = new(), _cModel = new();
+    private readonly TextBox _cUrl = new(), _cModel = new(), _cLang = new() { MaxLength = 16, Width = 80, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly PasswordBox _cKey = new();
     private readonly CheckBox _cClearKey = new() { Content = "保存済みの API キーを削除" };
     private readonly TextBlock _cTarget = new() { TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
@@ -194,6 +194,7 @@ internal sealed class SettingsWindow : Window
         _engCloud.Checked += (_, _) => UpdateEngineVisibility();
         _cUrl.TextChanged += (_, _) => { UpdateCloudTarget(); UpdateCloudStatus(); };
         _cModel.TextChanged += (_, _) => UpdateCloudStatus();
+        _cLang.TextChanged += (_, _) => UpdateCloudStatus();
         _cKey.PasswordChanged += (_, _) =>
         {
             if (_cKey.Password.Length > 0) _cClearKey.IsChecked = false;
@@ -211,6 +212,7 @@ internal sealed class SettingsWindow : Window
         System.Windows.Automation.AutomationProperties.SetName(_cUrl, "クラウド認識のベース URL");
         System.Windows.Automation.AutomationProperties.SetName(_cKey, "クラウド認識の API キー");
         System.Windows.Automation.AutomationProperties.SetName(_cModel, "クラウド認識のモデル名");
+        System.Windows.Automation.AutomationProperties.SetName(_cLang, "クラウド認識の言語コード");
         foreach (var e in new UIElement[]
         {
             Row("ベース URL", _cUrl),
@@ -219,6 +221,8 @@ internal sealed class SettingsWindow : Window
             Row("API キー", _cKey), _cKeyState, _cClearKey,
             Row("モデル名", _cModel),
             new TextBlock { Text = "例: whisper（接続先の公開名をそのまま入力します。名前の変換や存在確認はしません）", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray },
+            Row("言語コード", _cLang),
+            new TextBlock { Text = "例: ja（既定）、en。空欄にすると言語を指定せず、接続先の自動判定に任せます（日本語が他言語と判定されやすくなります）", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray },
             cloudButtons,
             new TextBlock { Text = "コピーは URL と API キーだけを一度複写します（整文のモデルは複写せず、以後は連動しません。入力済みの内容は上書きされます）。保存するまで反映されません。", TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray },
             _cStatus,
@@ -258,7 +262,7 @@ internal sealed class SettingsWindow : Window
         return _settings.Current.Recognition.Cloud.ApiKeyDpapi;
     }
 
-    private CloudRecognitionSettings ReadCloudForm() => new(_cUrl.Text.Trim(), ResolveCloudKey(), _cModel.Text.Trim());
+    private CloudRecognitionSettings ReadCloudForm() => new(_cUrl.Text.Trim(), ResolveCloudKey(), _cModel.Text.Trim(), _cLang.Text.Trim());
 
     /// <summary>クラウドが選ばれているとき、今の入力のままでは録音を始められない理由を示す（ネットワークには触れない）。</summary>
     private void UpdateCloudStatus()
@@ -303,7 +307,7 @@ internal sealed class SettingsWindow : Window
     private void ClearCloudConnection()
     {
         _error.Text = "";
-        _cUrl.Text = ""; _cModel.Text = ""; _cKey.Password = "";
+        _cUrl.Text = ""; _cModel.Text = ""; _cLang.Text = CloudRecognitionSettings.DefaultLanguage; _cKey.Password = "";
         _cCopied = false; _cCopiedKey = null;
         _cClearKey.IsChecked = _settings.Current.Recognition.Cloud.ApiKeyDpapi is not null;
         UpdateCloudTarget();
@@ -470,6 +474,7 @@ internal sealed class SettingsWindow : Window
         _modelRadios[s.Recognition.Model].IsChecked = true;
         _cUrl.Text = s.Recognition.Cloud.BaseUrl;
         _cModel.Text = s.Recognition.Cloud.Model;
+        _cLang.Text = s.Recognition.Cloud.Language;
         _engLocal.IsChecked = s.Recognition.Engine == RecognitionEngine.Local;
         _engCloud.IsChecked = s.Recognition.Engine == RecognitionEngine.Cloud;
         UpdateEngineVisibility();

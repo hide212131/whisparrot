@@ -13,9 +13,9 @@ public abstract record CloudRecognitionConfig
 
     public sealed record Ready : CloudRecognitionConfig
     {
-        public Ready(Uri endpoint, string model, string? apiKey)
+        public Ready(Uri endpoint, string model, string? apiKey, string language = CloudRecognitionSettings.DefaultLanguage)
         {
-            Endpoint = endpoint; Model = model; ApiKey = apiKey;
+            Endpoint = endpoint; Model = model; ApiKey = apiKey; Language = language;
         }
 
         /// <summary>POST 先（<c>base_url</c> の末尾 <c>/</c> を除いて <c>/audio/transcriptions</c> を連結したもの）。</summary>
@@ -23,6 +23,9 @@ public abstract record CloudRecognitionConfig
 
         /// <summary>利用者の入力そのまま（大小文字変換・接頭辞追加をしない）。</summary>
         public string Model { get; }
+
+        /// <summary>言語コード（空は指定しない）。</summary>
+        public string Language { get; }
 
         /// <summary>null は認証なし（正確な loopback 宛の空キーだけ）。</summary>
         public string? ApiKey { get; }
@@ -45,6 +48,7 @@ public abstract record CloudRecognitionConfig
             return new Unconfigured("クラウド認識のベース URL が不正です");
         if (c.Model.Trim().Length == 0) return new Unconfigured("クラウド認識のモデル名が未設定です");
         if (c.Model.Any(char.IsControl)) return new Unconfigured("クラウド認識のモデル名が不正です");
+        if (!IsValidLanguage(c.Language)) return new Unconfigured("クラウド認識の言語コードが不正です（ja、en など。自動判定は空欄）");
 
         string? key = null;
         if (c.ApiKeyDpapi is not null)
@@ -60,6 +64,10 @@ public abstract record CloudRecognitionConfig
         }
 
         var endpoint = new Uri(c.BaseUrl.TrimEnd('/') + TranscriptionPath, UriKind.Absolute);
-        return new Ready(endpoint, c.Model, key);
+        return new Ready(endpoint, c.Model, key, c.Language);
     }
+
+    /// <summary>言語コードは空（指定しない）か、英数字とハイフンだけの 1〜16 文字（ja / en / zh-CN 等）。</summary>
+    public static bool IsValidLanguage(string language) =>
+        language.Length == 0 || (language.Length <= 16 && language.All(ch => ch is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-'));
 }

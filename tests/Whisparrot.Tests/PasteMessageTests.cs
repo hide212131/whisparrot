@@ -169,3 +169,125 @@ public sealed class PasteMessageTests
         }
     }
 }
+
+/// <summary>M9: 宛先クラスによる貼り付け経路の振り分け。</summary>
+public sealed class PasteRoutingTests
+{
+    [Theory]
+    [InlineData("Edit")]
+    [InlineData("RichEdit20W")]
+    [InlineData("RICHEDIT50W")]
+    [InlineData("RichEditD2DPT")]
+    [InlineData("Scintilla")]
+    internal void Standard_text_edit_classes_are_classified_as_standard(string cls) =>
+        Assert.Equal(TargetKind.StandardEdit, Classify(cls));
+
+    [Theory]
+    [InlineData("Zed::Window")]
+    [InlineData("Chrome_RenderWidgetHostHWND")]
+    [InlineData("Windows.UI.Core.CoreWindow")]
+    [InlineData("EditorHost")]
+    [InlineData("")]
+    [InlineData(null)]
+    internal void Everything_else_is_custom_drawn(string? cls) =>
+        Assert.Equal(TargetKind.CustomDrawn, Classify(cls));
+
+    [Fact]
+    public void Auto_with_a_custom_drawn_target_sends_keys_only()
+    {
+        var msgs = 0; var keys = 0; var trace = new List<string>();
+        var r = PasteStep(PasteStrategy.Auto, () => { msgs++; return MessageResult.Delivered; }, () => { keys++; return true; }, trace.Add, TargetKind.CustomDrawn);
+        Assert.Equal(new PasteSend(true, Routes.SendInput), r);
+        Assert.Equal((0, 1), (msgs, keys));
+        Assert.Contains("route_by_class=send-input", trace);
+    }
+
+    [Theory]
+    [InlineData(TargetKind.StandardEdit)]
+    [InlineData(null)]
+    internal void Auto_with_a_standard_or_unresolved_target_uses_the_message_first(TargetKind? kind)
+    {
+        var keys = 0;
+        var r = PasteStep(PasteStrategy.Auto, () => MessageResult.Delivered, () => { keys++; return true; }, null, kind);
+        Assert.Equal(new PasteSend(true, Routes.PasteMessage), r);
+        Assert.Equal(0, keys);
+    }
+
+    [Fact]
+    public void Auto_with_a_standard_target_still_falls_back_when_the_message_fails()
+    {
+        var r = PasteStep(PasteStrategy.Auto, () => MessageResult.Failed, () => true, null, TargetKind.StandardEdit);
+        Assert.Equal(new PasteSend(true, Routes.SendInput), r);
+    }
+
+    [Fact]
+    public void A_forced_strategy_ignores_the_class()
+    {
+        var msgs = 0;
+        var r = PasteStep(PasteStrategy.PasteMessage, () => { msgs++; return MessageResult.Delivered; }, () => true, null, TargetKind.CustomDrawn);
+        Assert.Equal(new PasteSend(true, Routes.PasteMessage), r);
+        Assert.Equal(1, msgs);
+    }
+}
+
+/// <summary>M9: XAML アイランドの入力サイトにフォーカスが見えるとき、前景ウィンドウ内の可視な標準編集コントロールを宛先に解決する。</summary>
+public sealed class HostedEditorResolutionTests
+{
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateWindowExW(uint ex, string cls, string name, uint style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr inst, IntPtr param);
+    [DllImport("user32.dll")] private static extern bool DestroyWindow(IntPtr h);
+
+    private const uint WS_POPUP = 0x80000000u, WS_CHILD = 0x40000000u, WS_VISIBLE = 0x10000000u;
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern IntPtr GetWindowLongPtr(IntPtr h, int index);
+    [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr h);
+
+    /// <summary>
+    /// 作成時の WS_VISIBLE を自分と祖先でたどる可視判定。IsWindowVisible は非対話セッション（SSH 経由の実行など）では
+    /// WS_VISIBLE で作ったウィンドウでも偽を返すため、試験は環境に依らないこの判定を注入する。
+    /// </summary>
+    private static bool StyleVisible(IntPtr h)
+    {
+        for (; h != IntPtr.Zero; h = GetParent(h))
+            if (((long)GetWindowLongPtr(h, -16 /* GWL_STYLE */) & WS_VISIBLE) == 0) return false;
+        return true;
+    }
+
+    private static IntPtr Make(string cls, uint style, IntPtr parent) => CreateWindowExW(0, cls, "", style, 0, 0, 50, 20, parent, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+
+    [Fact]
+    public void Exactly_one_visible_standard_edit_is_resolved_and_hidden_ones_are_ignored()
+    {
+        var top = Make("STATIC", WS_POPUP | WS_VISIBLE, IntPtr.Zero);
+        try
+        {
+            var hiddenTab = Make("STATIC", WS_CHILD, top);                // 非表示のタブ（子も不可視扱い）
+            Make("EDIT", WS_CHILD | WS_VISIBLE, hiddenTab);
+            var visibleTab = Make("STATIC", WS_CHILD | WS_VISIBLE, top);
+            var edit = Make("EDIT", WS_CHILD | WS_VISIBLE, visibleTab);
+            Assert.NotEqual(IntPtr.Zero, edit);
+
+            var found = FindVisibleStandardEdit(top, StyleVisible);
+            Assert.NotNull(found);
+            Assert.Equal(edit, found!.Value.Hwnd);
+            Assert.Equal("Edit", found.Value.Class, ignoreCase: true);
+        }
+        finally { DestroyWindow(top); }
+    }
+
+    [Fact]
+    public void No_visible_edit_or_more_than_one_is_ambiguous_and_resolves_to_nothing()
+    {
+        var none = Make("STATIC", WS_POPUP | WS_VISIBLE, IntPtr.Zero);
+        var two = Make("STATIC", WS_POPUP | WS_VISIBLE, IntPtr.Zero);
+        try
+        {
+            Make("BUTTON", WS_CHILD | WS_VISIBLE, none);
+            Make("EDIT", WS_CHILD | WS_VISIBLE, two);
+            Make("EDIT", WS_CHILD | WS_VISIBLE, two);
+            Assert.Null(FindVisibleStandardEdit(none, StyleVisible));
+            Assert.Null(FindVisibleStandardEdit(two, StyleVisible));
+        }
+        finally { DestroyWindow(none); DestroyWindow(two); }
+    }
+}

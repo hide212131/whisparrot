@@ -23,12 +23,15 @@ public static class ModelIds
 public enum RecognitionEngine { Local, Cloud }
 
 /// <summary>OpenAI 互換の音声文字起こし API への接続設定。整文の互換接続とは独立に保存し、共有しない。秘密は暗号文（Base64）だけを持つ。</summary>
-public sealed record CloudRecognitionSettings(string BaseUrl, string? ApiKeyDpapi, string Model)
+public sealed record CloudRecognitionSettings(string BaseUrl, string? ApiKeyDpapi, string Model, string Language = CloudRecognitionSettings.DefaultLanguage)
 {
+    /// <summary>言語コードの既定。空文字列は「指定しない」（language フィールドを送らず、接続先の自動判定に任せる）。</summary>
+    public const string DefaultLanguage = "ja";
+
     public static CloudRecognitionSettings Empty { get; } = new("", null, "");
 
     /// <summary>全項目が既定（未設定）。設定ファイルには書き出さない。</summary>
-    public bool IsEmpty => BaseUrl.Length == 0 && ApiKeyDpapi is null && Model.Length == 0;
+    public bool IsEmpty => BaseUrl.Length == 0 && ApiKeyDpapi is null && Model.Length == 0 && Language == DefaultLanguage;
 }
 
 /// <summary><c>Model</c> / <c>Language</c> はローカル認識用（名称・位置を維持）。<c>Engine</c> がクラウドのときだけ <c>Cloud</c> を使う。</summary>

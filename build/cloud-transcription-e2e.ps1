@@ -126,7 +126,7 @@ try {
     Check 'probe ok: exit 0, outcome=success, text_chars=<N>, destination host shown, injected_count=0' ($r.Code -eq 0 -and (Kv $r 'recognition_outcome') -eq 'success' -and (Kv $r 'text_chars') -eq "$($cloudText.Length)" -and $r.Text -match 'destination_host=127.0.0.1:' -and (Kv $r 'injected_count') -eq '0')
     Check 'probe ok: the transcribed text and the key are NOT in the output' (-not $r.Text.Contains($cloudText) -and -not $r.Text.Contains($dummyKey) -and $r.Text -notmatch '(?m)^text=')
     Check 'probe ok: exactly one POST to /v1/audio/transcriptions with the matching Bearer' ($q.Count -eq 1 -and $q[0].method -eq 'POST' -and $q[0].path -eq '/v1/audio/transcriptions' -and $q[0].auth -eq 'match')
-    Check 'probe ok: multipart has file + model only; speech.wav, audio/wav, model verbatim' ($q[0].fields -eq 'file,model' -and $q[0].filename -eq 'speech.wav' -and $q[0].part_type -eq 'audio/wav' -and $q[0].model -eq 'mock-stt')
+    Check 'probe ok: multipart has file + model + language (default ja); speech.wav, audio/wav, model verbatim' ($q[0].fields -eq 'file,model,language' -and $q[0].filename -eq 'speech.wav' -and $q[0].part_type -eq 'audio/wav' -and $q[0].model -eq 'mock-stt')
     Check 'probe ok: the WAV is RIFF PCM16 16 kHz mono (44-byte header), 48000 samples, peak near the fixture peak' ($q[0].wav.ok -eq $true -and $q[0].wav.samples -eq 48000 -and $q[0].wav.length -eq 96044 -and [Math]::Abs($q[0].wav.peak - 16383) -le 4)
     $r = Run-Probe $tone @('--show-text')
     Check 'probe --show-text prints the text (fixture only)' ($r.Code -eq 0 -and $r.Text.Contains("text=$cloudText"))

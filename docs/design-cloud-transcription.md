@@ -209,9 +209,9 @@ OpenAI の公式ガイドは入力上限 25 MB と WAV 対応を示している�
 
 ### 7.1 要求と応答
 
-`CloudTranscriber` は `HttpClient` / `MultipartFormDataContent` / `System.Text.Json` を使い、`POST <base_url>/audio/transcriptions` を送る。multipart の boundary はライブラリに生成させる。フィールドは **file / model の2つだけ**を初回の共通契約とする。非空のキーは `Authorization: Bearer <key>` にだけ入れる。空キーを許す loopback では Authorization を付けない。
+`CloudTranscriber` は `HttpClient` / `MultipartFormDataContent` / `System.Text.Json` を使い、`POST <base_url>/audio/transcriptions` を送る。multipart の boundary はライブラリに生成させる。フィールドは **file / model の2つ**を初回の共通契約とし、M9 で言語コード（`recognition.cloud.language`、既定 `ja`）が空でないときだけ **language** を加えた（空は language フィールド自体を送らず自動判定に任せる）。非空のキーは `Authorization: Bearer <key>` にだけ入れる。空キーを許す loopback では Authorization を付けない。
 
-`language`、`response_format`、`temperature`、`prompt`、`stream`、時刻情報・話者分離・翻訳指定は追加しない。ローカル認識の `ja` 固定を変更する提案ではなく、クラウドは対応差の小さい最小契約で日本語音声の文字起こしを求める。日本語の品質と、追加指定なしで JSON を返す互換性は実地確認の受け入れ条件とする。モデル固有パラメーターが必要な接続先を黙って追加対応しない。
+`response_format`、`temperature`、`prompt`、`stream`、時刻情報・話者分離・翻訳指定は追加しない。クラウドは対応差の小さい最小契約で日本語音声の文字起こしを求める（M9 の実地報告で、language 未指定だと LiteLLM 経由で日本語以外と判定されることが多かったため、language だけを既定 `ja` で加えた）。日本語の品質と、追加指定なしで JSON を返す互換性は実地確認の受け入れ条件とする。モデル固有パラメーターが必要な接続先を黙って追加対応しない。
 
 成功は 2xx、完全に受信した JSON object のトップレベル `text` が文字列で、Trim 後に非空の場合だけとする。追加フィールドは無視し、`choices`・SSE・平文・部分 JSON・部分認識結果を代替入力にしない。空文字列は無音相当の非投入、欠損 / null / 非文字列は不正応答として区別する。Chat Completions の `finish_reason` は文字起こしには要求しない。
 
