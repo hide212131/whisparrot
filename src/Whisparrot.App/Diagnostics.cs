@@ -1,9 +1,11 @@
 using System.IO;
 using System.Diagnostics;
 using Whisparrot.Core;
+using Whisparrot.Core.Settings;
 using Whisparrot.Infrastructure;
 using Whisparrot.Infrastructure.Audio;
 using Whisparrot.Infrastructure.Recognition;
+using Whisparrot.Infrastructure.Settings;
 
 namespace Whisparrot.App;
 
@@ -80,7 +82,11 @@ internal static partial class Diagnostics
     }
 
     /// <summary>
-    /// --inject-probe [--strategy paste-message|send-input] [--grace-ms N] [--message-grace-ms N]: 5 秒のカウントダウン後、本番と同じ投入経路で固定文字列を前景アプリへ投入し、各ステップを出す。
+    /// --inject-probe [--strategy paste-message|ctrl-v|shift-insert|typing|custom] [--app-route プロセス名=経路]... [--custom-key Ctrl+Alt+V] [--config config.json]
+    ///   [--fixed-target [秒]] [--text 文字列] [--countdown-seconds N] [--grace-ms N] [--message-grace-ms N]:
+    /// 5 秒のカウントダウン後、本番と同じ投入経路で固定文字列を前景アプリへ投入し、各ステップを出す。
+    /// --fixed-target はカウントダウン後に投入先を記録し、指定秒（既定 5）の間に別アプリへ切り替えても記録した投入先へ入ることを確かめる。
+    /// --config は config.json の insertion（アプリ別上書き・カスタムキー）を使う。--app-route / --custom-key はそれを上書きする。
     /// </summary>
     public static int InjectProbe(string[] args)
     {
@@ -95,7 +101,7 @@ internal static partial class Diagnostics
         var si = Array.IndexOf(args, "--strategy");
         if (si >= 0 && (si + 1 >= args.Length || !Whisparrot.App.Windows.TextInjector.TryParseStrategy(args[si + 1], out strategy)))
         {
-            Console.WriteLine("--strategy には paste-message または send-input が必要です");
+            Console.WriteLine($"--strategy には {string.Join(" / ", InsertionRoutes.AllNames.Where(n => n != "auto"))} が必要です（省略は auto）");
             return 2;
         }
         int? messageGrace = null;
@@ -105,7 +111,51 @@ internal static partial class Diagnostics
             if (mi + 1 >= args.Length || !int.TryParse(args[mi + 1], out var mms) || mms < 0) { Console.WriteLine("--message-grace-ms には 0 以上の整数が必要です"); return 2; }
             messageGrace = mms;
         }
-        return Whisparrot.App.Windows.TextInjector.InjectProbe(grace, strategy, line => Console.WriteLine(line), messageGrace);
+
+        var insertion = AppSettings.Default.Insertion;
+        var ci = Array.IndexOf(args, "--config");
+        if (ci >= 0)
+        {
+            if (ci + 1 >= args.Length) { Console.WriteLine("--config にはファイルが必要です"); return 2; }
+            var loaded = new JsonSettingsStore(args[ci + 1]).Load();
+            if (!loaded.Usable) { Console.WriteLine("--config を読めません: " + loaded.Describe()); return 2; }
+            insertion = loaded.Settings.Insertion;
+        }
+        var ki = Array.IndexOf(args, "--custom-key");
+        if (ki >= 0)
+        {
+            Hotkey? ck = null;
+            string? ckErr = ki + 1 >= args.Length ? "値がありません" : null;
+            if (ckErr is null && !HotkeyFormat.TryParse(args[ki + 1], out ck, out ckErr)) { }
+            if (ckErr is not null) { Console.WriteLine("--custom-key が不正です: " + ckErr); return 2; }
+            insertion = insertion with { CustomKey = ck };
+        }
+        var routes = insertion.AppRoutes.ToList();
+        for (var a = 0; a < args.Length; a++)
+        {
+            if (args[a] != "--app-route") continue;
+            var parts = a + 1 < args.Length ? args[a + 1].Split('=', 2) : [];
+            if (parts.Length != 2 || !InsertionRoutes.TryParse(parts[1], out var route) || InsertionRules.ValidateProcess(InsertionSettings.NormalizeProcess(parts[0])) is not null)
+            { Console.WriteLine("--app-route には プロセス名=経路 が必要です"); return 2; }
+            routes.RemoveAll(r => string.Equals(InsertionSettings.NormalizeProcess(r.Process), InsertionSettings.NormalizeProcess(parts[0]), StringComparison.OrdinalIgnoreCase));
+            routes.Add(new AppRoute(parts[0], route));
+        }
+        insertion = insertion with { AppRoutes = routes };
+
+        int? fixedSwitch = null;
+        var fi = Array.IndexOf(args, "--fixed-target");
+        if (fi >= 0) fixedSwitch = fi + 1 < args.Length && int.TryParse(args[fi + 1], out var fs) && fs > 0 ? fs : 5;
+        string? text = null;
+        var ti = Array.IndexOf(args, "--text");
+        if (ti >= 0)
+        {
+            if (ti + 1 >= args.Length) { Console.WriteLine("--text には文字列が必要です"); return 2; }
+            text = args[ti + 1].Replace("\\n", "\n");
+        }
+        var countdown = 5;
+        var di = Array.IndexOf(args, "--countdown-seconds");
+        if (di >= 0 && (di + 1 >= args.Length || !int.TryParse(args[di + 1], out countdown) || countdown < 1)) { Console.WriteLine("--countdown-seconds には 1 以上の整数が必要です"); return 2; }
+        return Whisparrot.App.Windows.TextInjector.InjectProbe(grace, strategy, line => Console.WriteLine(line), messageGrace, insertion, fixedSwitch, text, countdown);
     }
 
     /// <summary>--pill-probe: 非対話でもできる範囲でピルの生成・表示・スタイルを確認する（描画の目視はできない）。</summary>

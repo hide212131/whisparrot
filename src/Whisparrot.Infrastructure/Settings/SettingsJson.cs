@@ -118,10 +118,23 @@ public static class SettingsJson
             var autostart = r.Bool("autostart", d.Autostart);
 
             var ins = r.Object("insertion");
-            var insertion = new InsertionSettings(ins.Enum("method", d.Insertion.Method, new Dictionary<string, InsertionMethod>
+            var method = ins.Enum("method", d.Insertion.Method, new Dictionary<string, InsertionMethod>
             {
                 ["clipboard"] = InsertionMethod.Clipboard, ["sendinput"] = InsertionMethod.SendInput,
-            }));
+            });
+            var customKey = ReadKeyCombo(ins, "custom_key");
+            var appRoutes = new List<AppRoute>();
+            foreach (var item in ins.ObjectArray("app_routes") ?? [])
+            {
+                var process = item.NullableString("process", null);
+                var routeName = item.NullableString("route", null);
+                item.Finish();
+                if (process is null || routeName is null) { item.Issues.Add(new SettingsIssue(item.Path, "process と route は両方必要です")); continue; }
+                if (!InsertionRoutes.TryParse(routeName, out var route))
+                { item.Issues.Add(new SettingsIssue(item.Path + ".route", $"未知の値: {routeName}（{string.Join(" / ", InsertionRoutes.AllNames)}）")); continue; }
+                appRoutes.Add(new AppRoute(process, route));
+            }
+            var insertion = new InsertionSettings(method, customKey, appRoutes);
             ins.Finish();
 
             var up = r.Object("updates");
@@ -140,25 +153,29 @@ public static class SettingsJson
         }
     }
 
-    private static Hotkey ReadHotkey(Reader root, Hotkey fallback)
+    private static Hotkey ReadHotkey(Reader root, Hotkey fallback) => ReadKeyCombo(root, "hotkey") ?? fallback;
+
+    /// <summary>{ "modifiers": [...], "key": "..." } 形式のキー組み合わせ。無ければ null。両方そろわない・不正ならエラーを積んで null。</summary>
+    private static Hotkey? ReadKeyCombo(Reader root, string name)
     {
-        var h = root.Object("hotkey");
-        if (!h.Present) return fallback;
+        var h = root.Object(name);
+        if (!h.Present) return null;
         var mods = h.StringArray("modifiers");
         var key = h.NullableString("key", null);
         h.Finish();
-        if (mods is null && key is null) return fallback;
+        if (mods is null && key is null) return null;
+        var path = name.Length > 0 && root.Path.Length > 0 ? root.Path + "." + name : name;
         if (mods is null || key is null)
         {
-            root.Issues.Add(new SettingsIssue("hotkey", "modifiers と key は両方必要です"));
-            return fallback;
+            root.Issues.Add(new SettingsIssue(path, "modifiers と key は両方必要です"));
+            return null;
         }
         if (!HotkeyFormat.TryCreate(mods, key, out var hk, out var err))
         {
-            root.Issues.Add(new SettingsIssue("hotkey", err!));
-            return fallback;
+            root.Issues.Add(new SettingsIssue(path, err!));
+            return null;
         }
-        return hk!;
+        return hk;
     }
 
     public static byte[] Serialize(AppSettings s)
@@ -214,6 +231,28 @@ public static class SettingsJson
             w.WriteBoolean("autostart", s.Autostart);
             w.WriteStartObject("insertion");
             w.WriteString("method", s.Insertion.Method == InsertionMethod.Clipboard ? "clipboard" : "sendinput");
+            // 追加キーは既定（未設定・空）のとき書かない。
+            if (s.Insertion.CustomKey is { } ck)
+            {
+                w.WriteStartObject("custom_key");
+                w.WriteStartArray("modifiers");
+                foreach (var m in HotkeyFormat.ModifierList(ck.Modifiers)) w.WriteStringValue(m);
+                w.WriteEndArray();
+                w.WriteString("key", HotkeyFormat.KeyName(ck.VirtualKey));
+                w.WriteEndObject();
+            }
+            if (s.Insertion.AppRoutes.Count > 0)
+            {
+                w.WriteStartArray("app_routes");
+                foreach (var a in s.Insertion.AppRoutes)
+                {
+                    w.WriteStartObject();
+                    w.WriteString("process", a.Process);
+                    w.WriteString("route", InsertionRoutes.Name(a.Route));
+                    w.WriteEndObject();
+                }
+                w.WriteEndArray();
+            }
             w.WriteEndObject();
             w.WriteStartObject("updates");
             WriteNullable(w, "last_check_attempt_utc", FormatTime(s.Updates.LastCheckAttemptUtc));
@@ -241,6 +280,7 @@ public static class SettingsJson
 
         public List<SettingsIssue> Issues { get; }
         public bool Present { get; }
+        public string Path => _path;
 
         public Reader(JsonElement el, string path, List<SettingsIssue> issues, bool present = true)
         {
@@ -272,6 +312,22 @@ public static class SettingsJson
                 return new Reader(default, Join(name), Issues, present: false);
             }
             return new Reader(v, Join(name), Issues);
+        }
+
+        /// <summary>オブジェクトの配列。各要素は添字つきのパス（name[i]）の Reader。配列でない・オブジェクト以外の要素はエラー。</summary>
+        public IReadOnlyList<Reader>? ObjectArray(string name)
+        {
+            if (!TryGet(name, out var v)) return null;
+            if (v.ValueKind != JsonValueKind.Array) { Issues.Add(new SettingsIssue(Join(name), "配列ではありません")); return null; }
+            var list = new List<Reader>();
+            var i = 0;
+            foreach (var item in v.EnumerateArray())
+            {
+                var path = $"{Join(name)}[{i++}]";
+                if (item.ValueKind != JsonValueKind.Object) { Issues.Add(new SettingsIssue(path, "オブジェクトではありません")); continue; }
+                list.Add(new Reader(item, path, Issues));
+            }
+            return list;
         }
 
         public string String(string name, string fallback)

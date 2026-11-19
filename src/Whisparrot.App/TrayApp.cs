@@ -41,7 +41,7 @@ internal static class TrayApp
                 return new ModelTarget(models.PathOf(id), models.CheckReady(id));
             }));
         var recorder = new WasapiRecorder(() => settings.Current.MicrophoneId);
-        var injector = new TextInjector();
+        var injector = new TextInjector(() => settings.Current.Insertion);
         var chatGpt = new ChatGptAuthService(network, new ChatGptTokenStore(AppPaths.ChatGptTokenPath, protector));
         var polisher = new SettingsTextPolisher(() => settings.Current, protector, network, chatGpt);
         // 認識の選択（local / cloud）は録音開始時に固定する。ローカルの準備確認・ワーカーは既存の WhisperRecognizer のまま。

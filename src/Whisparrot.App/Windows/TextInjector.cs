@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Whisparrot.Core;
+using Whisparrot.Core.Settings;
 using static Whisparrot.App.Windows.NativeMethods;
 
 namespace Whisparrot.App.Windows;
@@ -10,7 +11,11 @@ namespace Whisparrot.App.Windows;
 /// WM_PASTE を同期送信する（キーボードフックを通らないため、キーリマッパの再定義に左右されない）。それ以外（GPUI 等のカスタム描画は、
 /// 最上位ウィンドウへ WM_PASTE が届いても無視されるため）は SendInput（Ctrl+V）が主経路。標準クラスで宛先が得られない・送信が失敗／タイムアウトした場合、
 /// および宛先が全く解決できない場合は、SendInput へ落ちる。
-/// Enter は送らない。クリップボードは STA の専用スレッドで扱う。
+/// 経路は「アプリ別上書き（プロセス名）→ auto のクラス判定」の順で決める。auto 以外の経路（paste-message / ctrl-v / shift-insert / typing / custom）も選べる。
+/// 投入先は録音開始時に記録でき（<see cref="CaptureTarget"/>）、その場合は途中でフォーカスが移っても記録した対象へ入れる:
+/// WM_PASTE は記録したコントロールへ直接送り（前面化しない）、キー系とタイピングは投入直前に記録したウィンドウを前面化してから送る（前面化できなければ送らず失敗）。
+/// typing はクリップボードを使わず、Unicode 文字入力（KEYEVENTF_UNICODE）で送る。改行は Enter キーではなく改行文字の入力として送る。
+/// Enter キーは送らない。クリップボードは STA の専用スレッドで扱う。
 /// 退避は HGLOBAL 形式（テキスト / HTML / RTF / HDROP 等）を形式ごとに独立して行い、取得できない形式・
 /// バイト複製できない GDI ハンドル形式（CF_ENHMETAFILE 等）はその形式だけを飛ばす（飛ばした形式は復元されない）。
 /// 投入を中止するのは、クリップボードを開けないなど本当に進めない場合に限る。
@@ -32,13 +37,16 @@ internal sealed class TextInjector : ITextInjector
     /// <summary>WM_PASTE は同期送信で、対象は処理中にクリップボードを読むため、戻り後の待ちは既定で不要（0）。実測で必要なら根拠を添えて増やす。</summary>
     internal static readonly TimeSpan PasteMessageGrace = TimeSpan.Zero;
 
-    internal enum PasteStrategy { Auto, PasteMessage, SendInput }
+    internal enum PasteStrategy { Auto, PasteMessage, CtrlV, ShiftInsert, Typing, Custom }
     internal enum MessageResult { Delivered, NoTarget, Failed }
 
     internal static class Routes
     {
         public const string PasteMessage = "paste-message";
-        public const string SendInput = "send-input";
+        public const string CtrlV = "ctrl-v";
+        public const string ShiftInsert = "shift-insert";
+        public const string Typing = "typing";
+        public const string Custom = "custom";
         public const string None = "none";
     }
 
@@ -60,15 +68,46 @@ internal sealed class TextInjector : ITextInjector
         return TargetKind.CustomDrawn;
     }
 
+    /// <summary>診断用の強制指定。設定の経路名と同じ名前に加え、旧名 send-input（= ctrl-v）を受け付ける。</summary>
     internal static bool TryParseStrategy(string? value, out PasteStrategy strategy)
     {
         strategy = PasteStrategy.Auto;
-        switch (value)
-        {
-            case "paste-message": strategy = PasteStrategy.PasteMessage; return true;
-            case "send-input": strategy = PasteStrategy.SendInput; return true;
-            default: return false;
-        }
+        if (value == "send-input") { strategy = PasteStrategy.CtrlV; return true; }
+        if (value == "auto" || !InsertionRoutes.TryParse(value, out var route)) return false; // auto は指定なし（既定）
+        strategy = FromRoute(route);
+        return true;
+    }
+
+    internal static PasteStrategy FromRoute(InsertionRoute route) => route switch
+    {
+        InsertionRoute.PasteMessage => PasteStrategy.PasteMessage,
+        InsertionRoute.CtrlV => PasteStrategy.CtrlV,
+        InsertionRoute.ShiftInsert => PasteStrategy.ShiftInsert,
+        InsertionRoute.Typing => PasteStrategy.Typing,
+        InsertionRoute.Custom => PasteStrategy.Custom,
+        _ => PasteStrategy.Auto,
+    };
+
+    internal static string StrategyName(PasteStrategy s) => s switch
+    {
+        PasteStrategy.PasteMessage => Routes.PasteMessage, PasteStrategy.CtrlV => Routes.CtrlV, PasteStrategy.ShiftInsert => Routes.ShiftInsert,
+        PasteStrategy.Typing => Routes.Typing, PasteStrategy.Custom => Routes.Custom, _ => "auto",
+    };
+
+    /// <summary>
+    /// 経路の決定: 強制指定（診断）→ アプリ別上書き（プロセス名）→ auto。対象のプロセス名は記録した投入先から取る。
+    /// </summary>
+    internal static PasteStrategy DecideStrategy(PasteStrategy forced, InsertionSettings insertion, string? process)
+    {
+        if (forced != PasteStrategy.Auto) return forced;
+        return insertion.OverrideFor(process) is { } r ? FromRoute(r) : PasteStrategy.Auto;
+    }
+
+    private readonly Func<InsertionSettings> _insertion;
+
+    public TextInjector(Func<InsertionSettings>? insertion = null)
+    {
+        _insertion = insertion ?? (() => AppSettings.Default.Insertion);
     }
 
     private const uint CF_BITMAP = 2, CF_METAFILEPICT = 3, CF_PALETTE = 9, CF_DIB = 8, CF_DIBV5 = 17, CF_ENHMETAFILE = 14;
@@ -102,12 +141,39 @@ internal sealed class TextInjector : ITextInjector
         _ => null,
     };
 
-    public Task<InjectResult> InjectAsync(string text, CancellationToken ct)
+    /// <summary>録音開始時に記録した投入先。Target は WM_PASTE の宛先（記録時点で解決済み）。</summary>
+    internal sealed record RecordedTarget(PasteTarget Target) : IInjectTarget;
+
+    /// <summary>タスクバー・通知領域など、入力先にならないシェルのウィンドウ。記録時は「有効な対象なし」とする（トレイ操作で録音を始めた場合など）。</summary>
+    private static readonly string[] ShellClasses = ["Shell_TrayWnd", "Shell_SecondaryTrayWnd", "NotifyIconOverflowWindow", "TopLevelWindowForOverflowXamlIsland"];
+
+    public IInjectTarget? CaptureTarget()
+    {
+        if (ResolveTarget() is not { } t || !IsExternalWindow(t.Foreground) || ShellClasses.Contains(t.ForegroundClass)) return null;
+        return new RecordedTarget(t);
+    }
+
+    /// <summary>
+    /// 記録した投入先を、今も使えるかを確認して返す。ウィンドウが無い・別プロセスのものになった（ハンドルの再利用）なら null。
+    /// コントロールだけが無くなったときは、記録したウィンドウ内の編集コントロール（XAML アイランドの場合）か、ウィンドウ自体を宛先にする。
+    /// </summary>
+    internal static PasteTarget? ResolveRecorded(RecordedTarget r)
+    {
+        var t = r.Target;
+        if (!IsWindow(t.Foreground) || GetWindowThreadProcessId(t.Foreground, out var pid) == 0 || pid != t.Pid) return null;
+        if (IsWindow(t.Target) && GetWindowThreadProcessId(t.Target, out var tpid) != 0 && tpid == pid) return t;
+        var edit = t.Hosted ? FindVisibleStandardEdit(t.Foreground) : null;
+        return edit is { } e ? t with { Target = e.Hwnd } : t with { Target = t.Foreground };
+    }
+
+    public Task<InjectResult> InjectAsync(string text, CancellationToken ct) => InjectAsync(text, null, ct);
+
+    public Task<InjectResult> InjectAsync(string text, IInjectTarget? target, CancellationToken ct)
     {
         var tcs = new TaskCompletionSource<InjectResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
-            try { tcs.SetResult(InjectOnSta(text)); }
+            try { tcs.SetResult(InjectCore(text, target as RecordedTarget, PasteStrategy.Auto, null, null, null)); }
             catch (Exception ex) { tcs.SetResult(new InjectResult(InjectOutcome.Failed, $"入力に失敗しました: {ex.Message}")); }
         }) { IsBackground = true, Name = "whisparrot-inject" };
         thread.SetApartmentState(ApartmentState.STA);
@@ -115,12 +181,25 @@ internal sealed class TextInjector : ITextInjector
         return tcs.Task;
     }
 
-    private static InjectResult InjectOnSta(string text)
+    private const string NoTargetMessage = "入力先のウィンドウが見つかりません";
+
+    /// <summary>
+    /// 投入の本体。recorded があれば記録した投入先へ、無ければ投入時点の前景へ入れる。経路は forced（診断の強制指定）→ アプリ別上書き → auto。
+    /// 宛先が使えなければ何も送らずクリップボードにも触れず失敗する。
+    /// </summary>
+    internal InjectResult InjectCore(string text, RecordedTarget? recorded, PasteStrategy forced, Action<string>? trace, TimeSpan? grace, TimeSpan? messageGrace)
     {
-        if (!ForegroundIsExternal()) return Fail("入力先のウィンドウが見つかりません");
+        Func<PasteTarget?> resolve = recorded is null ? ResolveTarget : () => ResolveRecorded(recorded);
+        if (resolve() is not { } t0 || !IsExternalWindow(t0.Foreground)) return Fail(NoTargetMessage);
         if (!WaitModifiersReleased()) return Fail("修飾キーが押されたままです");
 
-        return InjectClipboard(text, () => PasteToForeground(PasteStrategy.Auto, null));
+        var insertion = _insertion();
+        // 修飾キー待ちの間に変わりうる前景（従来動作）は、待ちの後で解決し直して経路を決める。
+        if (resolve() is not { } t || !IsExternalWindow(t.Foreground)) return Fail(NoTargetMessage);
+        var strategy = DecideStrategy(forced, insertion, t.Process);
+        trace?.Invoke($"target_mode={(recorded is null ? "foreground" : "recorded")} process={t.Process} strategy={StrategyName(strategy)}");
+        if (strategy == PasteStrategy.Typing) return TypeText(text, t, trace);
+        return InjectClipboard(text, () => PasteToTarget(strategy, resolve, insertion, trace), grace: grace, trace: trace, messageGrace: messageGrace);
     }
 
     /// <summary>
@@ -131,6 +210,7 @@ internal sealed class TextInjector : ITextInjector
     /// </summary>
     internal static PasteSend PasteStep(PasteStrategy strategy, Func<MessageResult> sendMessage, Func<bool> sendKeys, Action<string>? trace = null, TargetKind? kind = null)
     {
+        var keyRoute = strategy switch { PasteStrategy.ShiftInsert => Routes.ShiftInsert, PasteStrategy.Custom => Routes.Custom, _ => Routes.CtrlV };
         var viaMessage = strategy == PasteStrategy.PasteMessage || (strategy == PasteStrategy.Auto && kind != TargetKind.CustomDrawn);
         if (viaMessage)
         {
@@ -138,28 +218,44 @@ internal sealed class TextInjector : ITextInjector
             trace?.Invoke($"paste_message={m}");
             if (m == MessageResult.Delivered) return new PasteSend(true, Routes.PasteMessage);
             if (strategy == PasteStrategy.PasteMessage) return new PasteSend(false, Routes.PasteMessage);
-            trace?.Invoke("fallback=send-input");
+            trace?.Invoke("fallback=ctrl-v");
         }
-        else if (strategy == PasteStrategy.Auto) trace?.Invoke("route_by_class=send-input");
-        return new PasteSend(sendKeys(), Routes.SendInput);
+        else if (strategy == PasteStrategy.Auto) trace?.Invoke("route_by_class=ctrl-v");
+        return new PasteSend(sendKeys(), keyRoute);
     }
 
     /// <summary>
     /// 投入の直前（クリップボードへ設定した後）に宛先を解決して貼り付ける。解決結果が自プロセス・シェル・デスクトップなら何も送らず中止する。
-    /// 宛先が全く得られないときは従来どおり send-input へ落ちる。
+    /// 宛先が全く得られないときは従来どおりキー（Ctrl+V）へ落ちる。キー系は、送る前に宛先のウィンドウを前面化する（できなければ送らず失敗）。
     /// </summary>
-    private static PasteSend PasteToForeground(PasteStrategy strategy, Action<string>? trace)
+    private static PasteSend PasteToTarget(PasteStrategy strategy, Func<PasteTarget?> resolve, InsertionSettings insertion, Action<string>? trace)
     {
-        var target = ResolveTarget();
+        var target = resolve();
         TargetKind? kind = null;
         if (target is { } t)
         {
-            if (!IsExternalWindow(t.Foreground)) return new PasteSend(false, Routes.None, "入力先のウィンドウが見つかりません");
+            if (!IsExternalWindow(t.Foreground)) return new PasteSend(false, Routes.None, NoTargetMessage);
             kind = Classify(t.TargetClass);
             trace?.Invoke($"target process={t.Process} foreground_class={t.ForegroundClass} focus={(t.HasFocusControl ? t.FocusClass : "none")} target_class={t.TargetClass} hosted_editor={t.Hosted} kind={kind}");
         }
         else trace?.Invoke("target=none");
-        var r = PasteStep(strategy, () => target is { } x ? SendPasteMessageTo(x.Target) : MessageResult.NoTarget, SendCtrlV, trace, kind);
+
+        string? keyError = null;
+        bool SendKeys()
+        {
+            if (strategy == PasteStrategy.Custom && insertion.CustomKey is null) { keyError = "カスタムキーが設定されていません"; return false; }
+            if (target is { } x && !BringToForeground(x, trace)) { keyError = FrontFailedMessage; return false; }
+            var (mods, vk) = strategy switch
+            {
+                PasteStrategy.ShiftInsert => (HotkeyModifiers.Shift, (uint)VK_INSERT),
+                PasteStrategy.Custom => (insertion.CustomKey!.Modifiers, insertion.CustomKey.VirtualKey),
+                _ => (HotkeyModifiers.Control, (uint)VK_V),
+            };
+            return SendChord(mods, vk);
+        }
+
+        var r = PasteStep(strategy, () => target is { } x ? SendPasteMessageTo(x.Target) : MessageResult.NoTarget, SendKeys, trace, kind);
+        if (!r.Sent && keyError != null) r = r with { Error = keyError };
         return r with { TargetClass = target?.TargetClass };
     }
 
@@ -174,7 +270,7 @@ internal sealed class TextInjector : ITextInjector
     /// Focus が XAML アイランドの入力サイト（<see cref="InputSiteClass"/>）のときは、実際の編集コントロールがその外側のウィンドウ木にあるので、
     /// 前景ウィンドウ内で可視の標準編集コントロールがちょうど 1 つだけなら Target をそれにする（Hosted = true）。
     /// </summary>
-    internal readonly record struct PasteTarget(IntPtr Foreground, IntPtr Focus, IntPtr Target, string ForegroundClass, string FocusClass, string TargetClass, string Process, bool Hosted)
+    internal readonly record struct PasteTarget(IntPtr Foreground, IntPtr Focus, IntPtr Target, string ForegroundClass, string FocusClass, string TargetClass, string Process, bool Hosted, uint Pid = 0)
     {
         public bool HasFocusControl => Focus != IntPtr.Zero;
     }
@@ -204,7 +300,7 @@ internal sealed class TextInjector : ITextInjector
         {
             target = edit.Hwnd; targetClass = edit.Class; hosted = true;
         }
-        return new PasteTarget(fg, focus, target, fgClass, focusClass, targetClass, process, hosted);
+        return new PasteTarget(fg, focus, target, fgClass, focusClass, targetClass, process, hosted, pid);
     }
 
     /// <summary>top の子孫のうち可視（親も可視）な標準編集コントロール。ちょうど 1 つのときだけ返す（複数・なしは曖昧なので null）。</summary>
@@ -233,11 +329,11 @@ internal sealed class TextInjector : ITextInjector
     /// </summary>
     internal static InjectResult InjectClipboard(string text, Func<bool> sendPaste, Action<IReadOnlyList<SkippedFormat>>? onSkipped = null,
         TimeSpan? grace = null, Action<string>? trace = null) =>
-        InjectClipboard(text, () => new PasteSend(sendPaste(), Routes.SendInput), onSkipped, grace, trace);
+        InjectClipboard(text, () => new PasteSend(sendPaste(), Routes.CtrlV), onSkipped, grace, trace);
 
     /// <summary>
-    /// 本体。復元前の待ちは経路で変わる: send-input は非同期に読まれうるので grace（既定 PasteGrace）、
-    /// paste-message は同期送信なので PasteMessageGrace（既定 0）。grace 引数は send-input の待ちを上書きする。
+    /// 本体。復元前の待ちは経路で変わる: キー系（ctrl-v / shift-insert / custom）は非同期に読まれうるので grace（既定 PasteGrace）、
+    /// paste-message は同期送信なので PasteMessageGrace（既定 0）。grace 引数はキー系の待ちを上書きする。
     /// </summary>
     internal static InjectResult InjectClipboard(string text, Func<PasteSend> paste, Action<IReadOnlyList<SkippedFormat>>? onSkipped = null,
         TimeSpan? grace = null, Action<string>? trace = null, TimeSpan? messageGrace = null)
@@ -395,29 +491,45 @@ internal sealed class TextInjector : ITextInjector
     /// 固定文字列を投入して各ステップを出力する。出すのは前景のプロセス名とクラス名（タイトルは出さない）、
     /// sequence 番号、成否、長さだけで、クリップボードの内容は出さない。
     /// </summary>
-    internal static int InjectProbe(int? graceMs, PasteStrategy strategy, Action<string> write, int? messageGraceMs = null)
+    internal static int InjectProbe(int? graceMs, PasteStrategy strategy, Action<string> write, int? messageGraceMs = null,
+        InsertionSettings? insertion = null, int? fixedSwitchSeconds = null, string? text = null, int countdownSeconds = 5)
     {
         var grace = graceMs is { } g ? TimeSpan.FromMilliseconds(g) : PasteGrace;
         var messageGrace = messageGraceMs is { } mg ? TimeSpan.FromMilliseconds(mg) : PasteMessageGrace;
-        write($"strategy={strategy switch { PasteStrategy.PasteMessage => Routes.PasteMessage, PasteStrategy.SendInput => Routes.SendInput, _ => "auto" }}");
+        text ??= ProbeText;
+        insertion ??= AppSettings.Default.Insertion;
+        write($"strategy={StrategyName(strategy)}");
+        write($"app_routes={(insertion.AppRoutes.Count == 0 ? "none" : string.Join(",", insertion.AppRoutes.Select(a => $"{a.Process}={InsertionRoutes.Name(a.Route)}")))} custom_key={insertion.CustomKey?.Display ?? "none"}");
         write($"grace_ms={(int)grace.TotalMilliseconds} message_grace_ms={(int)messageGrace.TotalMilliseconds}");
-        for (var i = 5; i >= 1; i--)
+        for (var i = countdownSeconds; i >= 1; i--)
         {
             write($"countdown={i} (focus the target app now)");
             Thread.Sleep(1000);
         }
+        var injector = new TextInjector(() => insertion);
         var exit = 1;
         var thread = new Thread(() =>
         {
-            write($"foreground={DescribeForeground()}");
-            write($"paste_target={DescribeTarget()}");
-            var external = ForegroundIsExternal();
-            write($"foreground_external={external}");
-            if (!external) { write("result=Failed 入力先のウィンドウが見つかりません"); return; }
-            if (!WaitModifiersReleased()) { write("result=Failed 修飾キーが押されたままです"); return; }
-            write($"inject_text_length={ProbeText.Length}");
-            var r = InjectClipboard(ProbeText, () => PasteToForeground(strategy, write),
-                s => write($"skipped_formats={FormatSkipped(s)}"), grace, write, messageGrace);
+            RecordedTarget? recorded = null;
+            if (fixedSwitchSeconds is { } sw)
+            {
+                // 開始時固定の確認: ここで投入先を記録し、その後の待ちの間に別アプリへ切り替えてもらう。
+                recorded = injector.CaptureTarget() as RecordedTarget;
+                write($"recorded={(recorded is null ? "none" : $"process={recorded.Target.Process} foreground_class={recorded.Target.ForegroundClass} target_class={recorded.Target.TargetClass}")}");
+                for (var i = sw; i >= 1; i--)
+                {
+                    write($"switch_countdown={i} (switch to another app now)");
+                    Thread.Sleep(1000);
+                }
+                write($"foreground_at_inject={DescribeForeground()}");
+            }
+            // 固定時の foreground / paste_target は「今の前景」の説明（投入先は recorded 行と target_mode 行）。
+            var now = recorded is null ? "" : "current_";
+            write($"{now}foreground={DescribeForeground()}");
+            write($"{now}paste_target={DescribeTarget()}");
+            write($"inject_text_length={text.Length}");
+            var r = injector.InjectCore(text, recorded, strategy, write, grace, messageGrace);
+            write($"foreground_after={DescribeForeground()}");
             write($"route_used={r.Route ?? "none"}");
             write($"target_class_used={(string.IsNullOrEmpty(r.TargetClass) ? "none" : r.TargetClass)}");
             write($"result={r.Outcome}{(r.Message is { } m ? " " + m : "")}");
@@ -453,8 +565,6 @@ internal sealed class TextInjector : ITextInjector
     private static extern uint RegisterClipboardFormatW(string name);
 
     private static InjectResult Fail(string message) => new(InjectOutcome.Failed, message);
-
-    private static bool ForegroundIsExternal() => IsExternalWindow(GetForegroundWindow());
 
     private static bool IsExternalWindow(IntPtr hwnd)
     {
@@ -572,14 +682,176 @@ internal sealed class TextInjector : ITextInjector
         return true; // 所有権はクリップボードへ移った
     }
 
-    private static bool SendCtrlV()
+    private const int VK_INSERT = 0x2D;
+
+    private static INPUT KeyInput(ushort vk, bool up, bool extended = false) => new()
     {
-        static INPUT Key(ushort vk, bool up) => new()
-        {
-            type = INPUT_KEYBOARD,
-            u = new InputUnion { ki = new KEYBDINPUT { wVk = vk, dwFlags = up ? KEYEVENTF_KEYUP : 0 } },
-        };
-        INPUT[] inputs = [Key(VK_CONTROL, false), Key(VK_V, false), Key(VK_V, true), Key(VK_CONTROL, true)];
+        type = INPUT_KEYBOARD,
+        u = new InputUnion { ki = new KEYBDINPUT { wVk = vk, dwFlags = (up ? KEYEVENTF_KEYUP : 0) | (extended ? KEYEVENTF_EXTENDEDKEY : 0) } },
+    };
+
+    /// <summary>ナビゲーション系のキーは拡張キーとして送る（テンキーの同名キーと区別するため）。</summary>
+    private static bool IsExtendedKey(uint vk) => vk is >= 0x21 and <= 0x28 or 0x2D or 0x2E;
+
+    /// <summary>修飾キーの押下 → キーの押下・解放 → 修飾キーの解放（逆順）。順序は Ctrl, Alt, Shift, Win。</summary>
+    internal static INPUT[] BuildChordInputs(HotkeyModifiers mods, uint vk)
+    {
+        var mk = new List<ushort>();
+        if (mods.HasFlag(HotkeyModifiers.Control)) mk.Add(VK_CONTROL);
+        if (mods.HasFlag(HotkeyModifiers.Alt)) mk.Add(VK_MENU);
+        if (mods.HasFlag(HotkeyModifiers.Shift)) mk.Add(VK_SHIFT);
+        if (mods.HasFlag(HotkeyModifiers.Win)) mk.Add(VK_LWIN);
+        var inputs = new List<INPUT>();
+        foreach (var m in mk) inputs.Add(KeyInput(m, false));
+        inputs.Add(KeyInput((ushort)vk, false, IsExtendedKey(vk)));
+        inputs.Add(KeyInput((ushort)vk, true, IsExtendedKey(vk)));
+        for (var i = mk.Count - 1; i >= 0; i--) inputs.Add(KeyInput(mk[i], true));
+        return inputs.ToArray();
+    }
+
+    private static bool SendChord(HotkeyModifiers mods, uint vk)
+    {
+        var inputs = BuildChordInputs(mods, vk);
         return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>()) == inputs.Length;
+    }
+
+    // ---- typing（Unicode 文字入力）----
+
+    /// <summary>SendInput 1 回あたりの UTF-16 コード単位数（1 単位 = 押下 + 解放の 2 イベント）。まとめて送りつつ、入力キューを溢れさせない大きさ。</summary>
+    internal const int TypingChunkUnits = 256;
+
+    /// <summary>
+    /// 入力する文字列へ整える。改行（CRLF / CR / LF）は LF 1 文字にそろえる（Enter キーではなく改行文字として送るため）。
+    /// タブ以外の制御文字は入力しない。
+    /// </summary>
+    internal static string NormalizeTypingText(string text)
+    {
+        var sb = new System.Text.StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (c == '\r') { sb.Append('\n'); if (i + 1 < text.Length && text[i + 1] == '\n') i++; }
+            else if (c == '\n' || c == '\t' || !char.IsControl(c)) sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>各コード単位を KEYEVENTF_UNICODE の押下 + 解放の組にする（wVk = 0、wScan = コード単位）。サロゲートペアは 2 単位として続けて送る。</summary>
+    internal static INPUT[] BuildTypingInputs(string normalized)
+    {
+        var inputs = new INPUT[normalized.Length * 2];
+        for (var i = 0; i < normalized.Length; i++)
+        {
+            inputs[2 * i] = UnicodeInput(normalized[i], false);
+            inputs[2 * i + 1] = UnicodeInput(normalized[i], true);
+        }
+        return inputs;
+    }
+
+    private static INPUT UnicodeInput(char unit, bool up) => new()
+    {
+        type = INPUT_KEYBOARD,
+        u = new InputUnion { ki = new KEYBDINPUT { wVk = 0, wScan = unit, dwFlags = KEYEVENTF_UNICODE | (up ? KEYEVENTF_KEYUP : 0) } },
+    };
+
+    /// <summary>[start, start + n) のうち、サロゲートペアを分けないようにした区切り位置の列。</summary>
+    internal static IEnumerable<(int Start, int Length)> TypingChunks(string normalized, int chunkUnits = TypingChunkUnits)
+    {
+        var pos = 0;
+        while (pos < normalized.Length)
+        {
+            var len = Math.Min(chunkUnits, normalized.Length - pos);
+            if (pos + len < normalized.Length && char.IsHighSurrogate(normalized[pos + len - 1])) len++;
+            yield return (pos, len);
+            pos += len;
+        }
+    }
+
+    private const string FrontFailedMessage = "入力先のウィンドウを前面にできなかったため、入力しませんでした";
+
+    /// <summary>
+    /// typing 経路: クリップボードを使わず、Unicode 文字入力で送る（退避・復元なし）。記録したウィンドウを前面化し（できなければ送らず失敗）、
+    /// チャンクごとに前面が変わっていないことを確かめてからまとめて SendInput する。
+    /// </summary>
+    private static InjectResult TypeText(string text, PasteTarget target, Action<string>? trace)
+    {
+        var norm = NormalizeTypingText(text);
+        trace?.Invoke($"typing_units={norm.Length} chunks={TypingChunks(norm).Count()}");
+        if (!BringToForeground(target, trace)) return new InjectResult(InjectOutcome.Failed, FrontFailedMessage, Routes.Typing, target.TargetClass);
+        foreach (var (start, length) in TypingChunks(norm))
+        {
+            if (GetForegroundWindow() != target.Foreground)
+                return new InjectResult(InjectOutcome.Failed, "入力の途中で前面のウィンドウが変わったため、中断しました", Routes.Typing, target.TargetClass);
+            var inputs = BuildTypingInputs(norm.Substring(start, length));
+            if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>()) != inputs.Length)
+                return new InjectResult(InjectOutcome.Failed, "文字入力を送れませんでした", Routes.Typing, target.TargetClass);
+        }
+        trace?.Invoke("typing_sent=True");
+        return new InjectResult(InjectOutcome.Success, Route: Routes.Typing, TargetClass: target.TargetClass);
+    }
+
+    // ---- 前面化 ----
+
+    internal static readonly TimeSpan ForegroundWait = TimeSpan.FromMilliseconds(500);
+    internal static readonly TimeSpan FocusSettleWait = TimeSpan.FromMilliseconds(500);
+    internal static readonly TimeSpan FocusSettleMin = TimeSpan.FromMilliseconds(40);
+
+    /// <summary>
+    /// 記録したウィンドウを前面にする。すでに前面なら何もしない。バックグラウンドからの SetForegroundWindow は拒否されうるので、
+    /// まず直接、だめなら現在の前面スレッドの入力へ一時的に接続して再試行する。最後に前面を確認し、前面にできなかったら false
+    /// （呼び出し側は何も送らない）。前面化したときは、対象のスレッドがフォーカスを復元するまで少し待つ。
+    /// </summary>
+    internal static bool BringToForeground(PasteTarget target, Action<string>? trace)
+    {
+        var hwnd = target.Foreground;
+        if (GetForegroundWindow() == hwnd) { trace?.Invoke("foreground=already"); return true; }
+        if (!IsWindow(hwnd)) return false;
+        if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+
+        SetForegroundWindow(hwnd);
+        var ok = WaitForeground(hwnd, ForegroundWait / 2);
+        var how = "direct";
+        if (!ok)
+        {
+            how = "attach";
+            var current = GetForegroundWindow();
+            var currentThread = current != IntPtr.Zero ? GetWindowThreadProcessId(current, out _) : 0;
+            var me = GetCurrentThreadId();
+            var attached = currentThread != 0 && currentThread != me && AttachThreadInput(me, currentThread, true);
+            try
+            {
+                BringWindowToTop(hwnd);
+                SetForegroundWindow(hwnd);
+            }
+            finally { if (attached) AttachThreadInput(me, currentThread, false); }
+            ok = WaitForeground(hwnd, ForegroundWait);
+        }
+        trace?.Invoke($"foreground={(ok ? "brought" : "failed")} how={how}");
+        if (!ok) return false;
+
+        // 前面化の直後は、対象スレッドがまだフォーカスを復元していないことがある。復元されるまで（上限つきで）待つ。
+        var tid = GetWindowThreadProcessId(hwnd, out _);
+        var start = DateTime.UtcNow;
+        while (true)
+        {
+            var elapsed = DateTime.UtcNow - start;
+            var info = new GUITHREADINFO { cbSize = (uint)Marshal.SizeOf<GUITHREADINFO>() };
+            var hasFocus = tid != 0 && GetGUIThreadInfo(tid, ref info) && info.hwndFocus != IntPtr.Zero;
+            if (elapsed >= FocusSettleMin && hasFocus) break;
+            if (elapsed >= FocusSettleWait) break;
+            Thread.Sleep(10);
+        }
+        return GetForegroundWindow() == hwnd;
+    }
+
+    private static bool WaitForeground(IntPtr hwnd, TimeSpan limit)
+    {
+        var deadline = DateTime.UtcNow + limit;
+        while (true)
+        {
+            if (GetForegroundWindow() == hwnd) return true;
+            if (DateTime.UtcNow >= deadline) return false;
+            Thread.Sleep(10);
+        }
     }
 }

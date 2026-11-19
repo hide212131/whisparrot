@@ -59,6 +59,7 @@ public sealed class SessionCoordinator : IDisposable
     private string? _pendingText;    // 未投入の一件（Failed 状態でだけ保持）
     private PolishSetup _polish = new PolishSetup.Off(); // 録音開始時に固定する整文の構え
     private RecognitionSetup.Ready? _recognize;          // 録音開始時に固定する認識の構え（クラウドの宛先・キーを含む）
+    private IInjectTarget? _target;                      // 録音開始時に記録した投入先（最初の投入だけが使う。再試行は投入時点の前景）
 
     public SessionCoordinator(IRecorder recorder, IRecognizer recognizer, ITextInjector injector, ITextPolisher? polisher = null)
         : this(recorder, new FixedRecognitionSource(recognizer), injector, polisher)
@@ -165,6 +166,7 @@ public sealed class SessionCoordinator : IDisposable
             return;
         }
         _sessionId++;
+        var target = CaptureTarget();
         try
         {
             _recorder.Start();
@@ -177,8 +179,15 @@ public sealed class SessionCoordinator : IDisposable
         }
         _stopping = false;
         _recognize = (RecognitionSetup.Ready)setup;
+        _target = target;
         _polish = PreparePolish();
         SetState(SessionState.Recording);
+    }
+
+    private IInjectTarget? CaptureTarget()
+    {
+        try { return _injector.CaptureTarget(); }
+        catch { return null; } // 記録できなければ従来の「投入時点の前景」へ倒す
     }
 
     private RecognitionSetup PrepareRecognition()
@@ -367,17 +376,20 @@ public sealed class SessionCoordinator : IDisposable
         StartInject(raw);
     }
 
-    private void StartInject(string text)
+    private void StartInject(string text, bool retry = false)
     {
         // 投入確定の境界: ここから先はキャンセルしない（部分投入の取り消し・自動方式変更をしない）。
         _pendingText = text;
         var id = _sessionId;
+        // 記録した投入先は最初の投入だけが使う。再試行は、その時点の前面ウィンドウを対象とする（従来動作）。
+        var target = retry ? null : _target;
+        _target = null;
         SetState(SessionState.Inserting);
         _ = Task.Run(async () =>
         {
             try
             {
-                Post(new InjectedEvt(id, await _injector.InjectAsync(text, CancellationToken.None)));
+                Post(new InjectedEvt(id, await _injector.InjectAsync(text, target, CancellationToken.None)));
             }
             catch (Exception ex)
             {
@@ -403,7 +415,7 @@ public sealed class SessionCoordinator : IDisposable
     private void OnRetry()
     {
         if (_state != SessionState.Failed || _pendingText is null) return;
-        StartInject(_pendingText);
+        StartInject(_pendingText, retry: true);
     }
 
     private void OnCancel()

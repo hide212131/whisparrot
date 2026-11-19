@@ -70,6 +70,26 @@ public static class HotkeyFormat
         return true;
     }
 
+    /// <summary>
+    /// 設定画面の入力欄用の表記（Ctrl+Alt+V / Ctrl-Alt-V）。区切りは + または -、最後の要素がキー、それ以前が修飾キー（大文字小文字は問わない）。
+    /// 検証は <see cref="TryCreate"/> と同じ（修飾キー 1 つ以上・重複なし・対応キーのみ）。
+    /// </summary>
+    public static bool TryParse(string? text, out Hotkey? hotkey, out string? error)
+    {
+        hotkey = null;
+        var t = (text ?? "").Trim();
+        if (t.Length == 0) { error = "キーが空です"; return false; }
+        var parts = t.Split(['+', '-'], StringSplitOptions.TrimEntries);
+        if (parts.Any(p => p.Length == 0)) { error = $"キーの表記が不正です: {t}（例 Ctrl+Alt+V）"; return false; }
+        var mods = new List<string>();
+        foreach (var m in parts[..^1])
+        {
+            var hit = ModifierOrder.FirstOrDefault(o => string.Equals(o.Name, m, StringComparison.OrdinalIgnoreCase));
+            mods.Add(hit.Name ?? m);
+        }
+        return TryCreate(mods, parts[^1], out hotkey, out error);
+    }
+
     public static Hotkey Create(HotkeyModifiers mods, uint vk) => new(mods, vk, Display(mods, KeyName(vk) ?? $"0x{vk:X2}"));
 
     public static bool SameKey(Hotkey a, Hotkey b) => a.Modifiers == b.Modifiers && a.VirtualKey == b.VirtualKey;

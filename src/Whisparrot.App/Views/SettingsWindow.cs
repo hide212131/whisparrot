@@ -33,8 +33,11 @@ internal sealed class SettingsWindow : Window
     private readonly CheckBox _ctrl = new() { Content = "Ctrl" }, _alt = new() { Content = "Alt" }, _shift = new() { Content = "Shift" }, _win = new() { Content = "Win" };
     private readonly ComboBox _key = new() { Width = 90 };
     private readonly ComboBox _mic = new() { MinWidth = 280 };
-    private readonly RadioButton _insClipboard = new() { Content = "クリップボード（Ctrl+V）", GroupName = "ins" };
-    private readonly RadioButton _insTyping = new() { Content = "タイピング（SendInput）— 未実装（T14）", GroupName = "ins", IsEnabled = false };
+    private readonly TextBox _customKey = new() { Width = 140, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly ListBox _appRoutes = new() { MinHeight = 60, MaxHeight = 120 };
+    private readonly List<AppRoute> _appRouteItems = [];
+    private readonly TextBox _routeProcess = new() { Width = 140 };
+    private readonly ComboBox _routeChoice = new() { Width = 120 };
 
     private readonly Dictionary<string, RadioButton> _modelRadios = [];
     private readonly Dictionary<string, TextBlock> _modelStatus = [];
@@ -93,7 +96,7 @@ internal sealed class SettingsWindow : Window
         _autostart = autostart; _tryHotkey = tryHotkey; _adoptedHotkey = adoptedHotkey; _backendText = backendText; _lastRecognitionText = lastRecognitionText;
 
         Title = "whisparrot 設定";
-        Width = 520; Height = 700; MinWidth = 440;
+        Width = 520; Height = 760; MinWidth = 440;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
         var root = new DockPanel { Margin = new Thickness(12) };
@@ -112,6 +115,7 @@ internal sealed class SettingsWindow : Window
         if (!settings.LoadResult.Usable)
             body.Children.Add(new TextBlock { Text = settings.LoadResult.Describe(), TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.Firebrick, Margin = new Thickness(0, 0, 0, 8) });
         body.Children.Add(BuildInput());
+        body.Children.Add(BuildInsertion());
         body.Children.Add(BuildRecognition());
         body.Children.Add(BuildCleanup());
         body.Children.Add(BuildNetwork());
@@ -156,7 +160,67 @@ internal sealed class SettingsWindow : Window
         hk.Children.Add(new TextBlock { Text = "＋ ", VerticalAlignment = VerticalAlignment.Center });
         hk.Children.Add(_key);
         _mic.DisplayMemberPath = nameof(MicChoice.Name);
-        return Group("入力", Row("ホットキー", hk), Row("マイク", _mic), new TextBlock { Text = "投入方式" }, _insClipboard, _insTyping);
+        return Group("入力", Row("ホットキー", hk), Row("マイク", _mic));
+    }
+
+    private static readonly string[] RouteDescriptions =
+    [
+        "auto: 標準の編集コントロールは貼り付けメッセージ、それ以外は Ctrl+V",
+        "paste-message: 貼り付けメッセージ（WM_PASTE）を直接送る",
+        "ctrl-v: クリップボードへ置いて Ctrl+V を送る",
+        "shift-insert: クリップボードへ置いて Shift+Insert を送る",
+        "typing: クリップボードを使わず、文字として直接入力する（改行も文字として入力）",
+        "custom: クリップボードへ置いて、下のカスタムキーを送る",
+    ];
+
+    private UIElement BuildInsertion()
+    {
+        foreach (var r in InsertionRoutes.AllNames) _routeChoice.Items.Add(r);
+        _routeChoice.SelectedIndex = 0;
+        _appRoutes.SelectionMode = SelectionMode.Single;
+        System.Windows.Automation.AutomationProperties.SetName(_customKey, "カスタムキー");
+        System.Windows.Automation.AutomationProperties.SetName(_appRoutes, "アプリ別の投入経路");
+        System.Windows.Automation.AutomationProperties.SetName(_routeProcess, "プロセス名");
+        System.Windows.Automation.AutomationProperties.SetName(_routeChoice, "投入経路");
+        var add = new Button { Content = "追加", Padding = new Thickness(10, 1, 10, 1), Margin = new Thickness(8, 0, 8, 0) };
+        var remove = new Button { Content = "選択を削除", Padding = new Thickness(10, 1, 10, 1) };
+        add.Click += (_, _) => { if (AddAppRoute(_routeProcess.Text, _routeChoice.SelectedItem as string) is { } err) _error.Text = err; else { _error.Text = ""; _routeProcess.Clear(); } };
+        remove.Click += (_, _) => { if (_appRoutes.SelectedIndex >= 0) RemoveAppRoute(_appRoutes.SelectedIndex); };
+        var addRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
+        foreach (var e in new UIElement[] { _routeProcess, _routeChoice, add, remove }) addRow.Children.Add(e);
+        var note = (string text) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
+        return Group("投入先と経路",
+            note("投入先は録音を始めたときの前面ウィンドウに固定されます。途中で別のアプリへ移っても、そのウィンドウへ入力します（キーやタイピングで送る経路では、投入の直前にそのウィンドウを前面にします）。"),
+            new TextBlock { Text = "アプリ別の経路（プロセス名 = exe のベース名。指定が無いアプリは auto）" },
+            _appRoutes, addRow,
+            Row("カスタムキー", _customKey),
+            note("custom 経路で送るキー（例 Ctrl+Alt+V）。修飾キーとキーを + で結びます。空欄で未設定。"),
+            note("経路: " + string.Join(" ／ ", RouteDescriptions)));
+    }
+
+    /// <summary>アプリ別上書きを追加する（同じプロセス名は置き換え）。不正なら表示用のエラーを返す。</summary>
+    internal string? AddAppRoute(string? process, string? routeName)
+    {
+        var name = InsertionSettings.NormalizeProcess(process);
+        if (InsertionRules.ValidateProcess(name) is { } err) return err;
+        if (!InsertionRoutes.TryParse(routeName, out var route)) return "経路を選んでください";
+        var at = _appRouteItems.FindIndex(a => string.Equals(a.Process, name, StringComparison.OrdinalIgnoreCase));
+        if (at >= 0) _appRouteItems[at] = new AppRoute(name, route); else _appRouteItems.Add(new AppRoute(name, route));
+        RefreshAppRoutes();
+        return null;
+    }
+
+    internal void RemoveAppRoute(int index)
+    {
+        if (index < 0 || index >= _appRouteItems.Count) return;
+        _appRouteItems.RemoveAt(index);
+        RefreshAppRoutes();
+    }
+
+    private void RefreshAppRoutes()
+    {
+        _appRoutes.Items.Clear();
+        foreach (var a in _appRouteItems) _appRoutes.Items.Add($"{a.Process} → {InsertionRoutes.Name(a.Route)}");
     }
 
     private static IEnumerable<string> KeyChoices()
@@ -470,7 +534,10 @@ internal sealed class SettingsWindow : Window
             _mic.Items.Add(new MicChoice(s.MicrophoneId, "（見つかりません）" + s.MicrophoneId));
         _mic.SelectedItem = _mic.Items.Cast<MicChoice>().First(c => c.Id == s.MicrophoneId);
 
-        _insClipboard.IsChecked = true;
+        _customKey.Text = s.Insertion.CustomKey?.Display ?? "";
+        _appRouteItems.Clear();
+        _appRouteItems.AddRange(s.Insertion.AppRoutes);
+        RefreshAppRoutes();
         _modelRadios[s.Recognition.Model].IsChecked = true;
         _cUrl.Text = s.Recognition.Cloud.BaseUrl;
         _cModel.Text = s.Recognition.Cloud.Model;
@@ -586,6 +653,10 @@ internal sealed class SettingsWindow : Window
         if (_clearPxPass.IsChecked == true) pxPass = null;
         else if (_pxPass.Password.Length > 0) pxPass = _protector.Protect(_pxPass.Password);
 
+        Hotkey? customKey = null;
+        if (_customKey.Text.Trim().Length > 0 && !HotkeyFormat.TryParse(_customKey.Text, out customKey, out var ckErr))
+        { _error.Text = "カスタムキー: " + ckErr; return; }
+
         var next = cur with
         {
             Hotkey = hotkey,
@@ -606,7 +677,7 @@ internal sealed class SettingsWindow : Window
                 _pxUrl.Text.Trim(), _pxUser.Text.Trim(), pxPass,
                 _pxAuthWindows.IsChecked == true ? ProxyManualAuth.Windows : ProxyManualAuth.Credentials),
             Autostart = _autostartBox.IsChecked == true,
-            Insertion = new InsertionSettings(InsertionMethod.Clipboard),
+            Insertion = new InsertionSettings(cur.Insertion.Method, customKey, _appRouteItems.ToArray()),
         };
 
         var issues = SettingsValidator.Validate(next, DateTimeOffset.UtcNow);

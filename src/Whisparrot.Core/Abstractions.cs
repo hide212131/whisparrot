@@ -58,8 +58,18 @@ public enum InjectOutcome { Success, Failed }
 /// <summary>Route は実際に使った貼り付け経路（paste-message / send-input）、TargetClass は投入直前に解決した宛先のウィンドウクラス。持たない実装・失敗では null。</summary>
 public sealed record InjectResult(InjectOutcome Outcome, string? Message = null, string? Route = null, string? TargetClass = null);
 
+/// <summary>録音開始時に記録した投入先（ウィンドウとフォーカス中コントロール）。中身は実装だけが解釈する。</summary>
+public interface IInjectTarget { }
+
 /// <summary>前景アプリへテキストを入れる。投入確定後は取消できない。</summary>
 public interface ITextInjector
 {
+    /// <summary>投入時点の前景ウィンドウへ入れる（従来動作）。</summary>
     Task<InjectResult> InjectAsync(string text, CancellationToken ct);
+
+    /// <summary>録音開始時に呼ぶ。投入先として使える前景ウィンドウを記録して返す。記録できない（自プロセス・シェル・デスクトップ等）ときは null。</summary>
+    IInjectTarget? CaptureTarget() => null;
+
+    /// <summary>記録した投入先へ入れる。<paramref name="target"/> が null なら <see cref="InjectAsync(string, CancellationToken)"/> と同じ（投入時点の前景）。</summary>
+    Task<InjectResult> InjectAsync(string text, IInjectTarget? target, CancellationToken ct) => InjectAsync(text, ct);
 }

@@ -16,6 +16,8 @@ public static class SettingsValidator
         if (s.Recognition.Language != AppSettings.Language) Add("recognition.language", $"{AppSettings.Language} だけ対応しています");
         if (s.Cleanup.TimeoutSeconds != AppSettings.CleanupTimeoutSeconds) Add("cleanup.timeout_seconds", $"{AppSettings.CleanupTimeoutSeconds} 固定です");
 
+        ValidateInsertion(s.Insertion, Add);
+
         var cloud = s.Recognition.Cloud;
         var useCloud = s.Recognition.Engine == RecognitionEngine.Cloud;
         // 非選択でも型・URL 構文・暗号文形式は検証する。URL / モデルの必須条件だけ cloud 選択時に限る。
@@ -52,6 +54,36 @@ public static class SettingsValidator
             if (t is { } v && v > now) Add(path, "将来の時刻です（時計の巻き戻りの可能性）");
         }
         return issues;
+    }
+
+    private static void ValidateInsertion(InsertionSettings ins, Action<string, string> add)
+    {
+        if (ins.CustomKey is { } ck && (ck.Modifiers == HotkeyModifiers.None || HotkeyFormat.KeyName(ck.VirtualKey) is null))
+            add("insertion.custom_key", "キーが不正です（修飾キー 1 つ以上と対応するキー）");
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < ins.AppRoutes.Count; i++)
+        {
+            var a = ins.AppRoutes[i];
+            var path = $"insertion.app_routes[{i}]";
+            var name = InsertionSettings.NormalizeProcess(a.Process);
+            if (InsertionRules.ValidateProcess(name) is { } pe) add(path + ".process", pe);
+            else if (!seen.Add(name)) add(path + ".process", $"プロセス名が重複しています: {name}");
+            if (a.Route == InsertionRoute.Custom && ins.CustomKey is null) add(path + ".route", "custom を使うには insertion.custom_key が必要です");
+        }
+    }
+}
+
+public static class InsertionRules
+{
+    public const int MaxProcessLength = 64;
+
+    /// <summary>アプリ別上書きのプロセス名（正規化済み）の検証。問題が無ければ null。</summary>
+    public static string? ValidateProcess(string normalized)
+    {
+        if (normalized.Length == 0) return "プロセス名が空です";
+        if (normalized.Length > MaxProcessLength) return $"プロセス名は {MaxProcessLength} 文字以内です";
+        if (normalized.Any(c => char.IsControl(c) || "\\/:*?\"<>|".Contains(c))) return "プロセス名に使えない文字があります（exe のベース名だけを指定してください）";
+        return null;
     }
 }
 

@@ -49,7 +49,65 @@ public sealed record CleanupSettings(CleanupProvider Provider, int TimeoutSecond
 
 public sealed record ProxySettings(ProxyMode Mode, string ManualUrl, string ManualUsername, string? ManualPasswordDpapi, ProxyManualAuth ManualAuth = ProxyManualAuth.Credentials);
 
-public sealed record InsertionSettings(InsertionMethod Method);
+/// <summary>
+/// 投入経路（M10）。Auto は宛先クラスで決める（標準編集クラスは paste-message、カスタム描画は ctrl-v）。
+/// ctrl-v / shift-insert / custom はクリップボードへ置いてからキーを送る。typing はクリップボードを使わず Unicode 文字入力で送る。
+/// </summary>
+public enum InsertionRoute { Auto, PasteMessage, CtrlV, ShiftInsert, Typing, Custom }
+
+public static class InsertionRoutes
+{
+    private static readonly (InsertionRoute Route, string Name)[] Names =
+    [
+        (InsertionRoute.Auto, "auto"), (InsertionRoute.PasteMessage, "paste-message"), (InsertionRoute.CtrlV, "ctrl-v"),
+        (InsertionRoute.ShiftInsert, "shift-insert"), (InsertionRoute.Typing, "typing"), (InsertionRoute.Custom, "custom"),
+    ];
+
+    public static IReadOnlyList<string> AllNames { get; } = Names.Select(n => n.Name).ToArray();
+
+    public static string Name(InsertionRoute r) => Names.First(n => n.Route == r).Name;
+
+    public static bool TryParse(string? name, out InsertionRoute route)
+    {
+        foreach (var n in Names) if (n.Name == name) { route = n.Route; return true; }
+        route = InsertionRoute.Auto;
+        return false;
+    }
+}
+
+/// <summary>アプリ別の経路上書き。Process は exe のベース名（拡張子なし）。照合は大文字小文字を区別しない。</summary>
+public sealed record AppRoute(string Process, InsertionRoute Route);
+
+/// <summary>
+/// 投入の設定。<c>Method</c> は旧版の項目（維持）。<c>CustomKey</c> は custom 経路で送るキー組み合わせ（未設定は null）。
+/// <c>AppRoutes</c> はアプリ別の上書き（経路の決定は「アプリ別上書き → auto のクラス判定」）。
+/// </summary>
+public sealed record InsertionSettings(InsertionMethod Method, Hotkey? CustomKey, IReadOnlyList<AppRoute> AppRoutes)
+{
+    public InsertionSettings(InsertionMethod method) : this(method, null, []) { }
+
+    /// <summary>プロセス名（拡張子の有無・大文字小文字は問わない）に上書きがあれば、その経路。無ければ null。</summary>
+    public InsertionRoute? OverrideFor(string? process)
+    {
+        var key = NormalizeProcess(process);
+        if (key.Length == 0) return null;
+        foreach (var a in AppRoutes)
+            if (string.Equals(NormalizeProcess(a.Process), key, StringComparison.OrdinalIgnoreCase)) return a.Route;
+        return null;
+    }
+
+    /// <summary>前後の空白と、末尾の .exe を取り除く。</summary>
+    public static string NormalizeProcess(string? name)
+    {
+        var t = (name ?? "").Trim();
+        return t.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? t[..^4].TrimEnd() : t;
+    }
+
+    public bool Equals(InsertionSettings? other) =>
+        other is not null && Method == other.Method && Equals(CustomKey, other.CustomKey) && AppRoutes.SequenceEqual(other.AppRoutes);
+
+    public override int GetHashCode() => HashCode.Combine(Method, CustomKey, AppRoutes.Count);
+}
 
 public sealed record UpdateSettings(DateTimeOffset? LastCheckAttemptUtc, DateTimeOffset? LastCheckSuccessUtc);
 

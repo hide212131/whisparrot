@@ -29,7 +29,7 @@ public sealed class PasteMessageTests
     {
         var keys = 0;
         var r = PasteStep(PasteStrategy.Auto, () => m, () => { keys++; return true; });
-        Assert.Equal(new PasteSend(true, Routes.SendInput), r);
+        Assert.Equal(new PasteSend(true, Routes.CtrlV), r);
         Assert.Equal(1, keys);
     }
 
@@ -46,14 +46,14 @@ public sealed class PasteMessageTests
     public void ForcedSendInput_NeverSendsMessage()
     {
         var msgs = 0;
-        var r = PasteStep(PasteStrategy.SendInput, () => { msgs++; return MessageResult.Delivered; }, () => true);
-        Assert.Equal(new PasteSend(true, Routes.SendInput), r);
+        var r = PasteStep(PasteStrategy.CtrlV, () => { msgs++; return MessageResult.Delivered; }, () => true);
+        Assert.Equal(new PasteSend(true, Routes.CtrlV), r);
         Assert.Equal(0, msgs);
     }
 
     [Theory]
     [InlineData("paste-message", PasteStrategy.PasteMessage)]
-    [InlineData("send-input", PasteStrategy.SendInput)]
+    [InlineData("send-input", PasteStrategy.CtrlV)]
     internal void ParseStrategy_AcceptsKnownNames(string s, PasteStrategy expected)
     {
         Assert.True(TryParseStrategy(s, out var got));
@@ -88,7 +88,7 @@ public sealed class PasteMessageTests
         var sw = Stopwatch.StartNew();
         var r = InjectClipboard("投入テキスト", () => true, grace: TimeSpan.FromMilliseconds(400));
         sw.Stop();
-        Assert.Equal(Routes.SendInput, r.Route);
+        Assert.Equal(Routes.CtrlV, r.Route);
         Assert.True(sw.Elapsed >= TimeSpan.FromMilliseconds(350), $"waited only {sw.Elapsed}");
     }
 
@@ -120,7 +120,7 @@ public sealed class PasteMessageTests
         Assert.NotEqual(MessageResult.Delivered, SendPasteMessageTo(new IntPtr(0x0BADBAD)));
     }
 
-    private sealed class EditHost : IDisposable
+    internal sealed class EditHost : IDisposable
     {
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr CreateWindowExW(uint ex, string cls, string name, uint style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr inst, IntPtr param);
@@ -197,9 +197,9 @@ public sealed class PasteRoutingTests
     {
         var msgs = 0; var keys = 0; var trace = new List<string>();
         var r = PasteStep(PasteStrategy.Auto, () => { msgs++; return MessageResult.Delivered; }, () => { keys++; return true; }, trace.Add, TargetKind.CustomDrawn);
-        Assert.Equal(new PasteSend(true, Routes.SendInput), r);
+        Assert.Equal(new PasteSend(true, Routes.CtrlV), r);
         Assert.Equal((0, 1), (msgs, keys));
-        Assert.Contains("route_by_class=send-input", trace);
+        Assert.Contains("route_by_class=ctrl-v", trace);
     }
 
     [Theory]
@@ -217,7 +217,7 @@ public sealed class PasteRoutingTests
     public void Auto_with_a_standard_target_still_falls_back_when_the_message_fails()
     {
         var r = PasteStep(PasteStrategy.Auto, () => MessageResult.Failed, () => true, null, TargetKind.StandardEdit);
-        Assert.Equal(new PasteSend(true, Routes.SendInput), r);
+        Assert.Equal(new PasteSend(true, Routes.CtrlV), r);
     }
 
     [Fact]

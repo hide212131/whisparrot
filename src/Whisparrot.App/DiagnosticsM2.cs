@@ -326,6 +326,35 @@ internal static partial class Diagnostics
         var textE = File.ReadAllText(settings.ConfigPath);
         check("cleared + local: engine local, cloud connection back to defaults, and no recognition.cloud / engine keys written",
             se.Recognition.Engine == RecognitionEngine.Local && se.Recognition.Cloud.IsEmpty && !textE.Contains("\"cloud\"") && !textE.Contains("\"engine\""));
+        check("default insertion writes no custom_key / app_routes keys", !textE.Contains("custom_key") && !textE.Contains("app_routes") && se.Insertion.AppRoutes.Count == 0 && se.Insertion.CustomKey is null);
+
+        // M10: アプリ別の投入経路とカスタムキー。追加・置き換え・削除、不正値の拒否、保存と往復。
+        var winF = new Views.SettingsWindow(settings, protector, models, network, chatGpt, autostart, hk => (true, 0), () => null, () => null, null);
+        winF.Show();
+        T FF<T>(string name) => (T)typeof(Views.SettingsWindow).GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(winF)!;
+        void SaveF() => typeof(Views.SettingsWindow).GetMethod("Save", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(winF, null);
+        string ErrorF() => FF<System.Windows.Controls.TextBlock>("_error").Text;
+        check("insertion panel starts empty: no app routes, empty custom key", FF<System.Windows.Controls.ListBox>("_appRoutes").Items.Count == 0 && FF<System.Windows.Controls.TextBox>("_customKey").Text.Length == 0);
+        check("an empty or path-like process name is refused", winF.AddAppRoute("", "typing") is not null && winF.AddAppRoute("C:\\x\\hane.exe", "typing") is not null && winF.AddAppRoute("hane", "bogus") is not null
+            && FF<System.Windows.Controls.ListBox>("_appRoutes").Items.Count == 0);
+        check("add: hane.exe is stored as the base name; adding the same name (any case) replaces it",
+            winF.AddAppRoute("Hane.exe", "typing") is null && winF.AddAppRoute("notepad", "paste-message") is null && winF.AddAppRoute("HANE", "shift-insert") is null
+            && FF<System.Windows.Controls.ListBox>("_appRoutes").Items.Count == 2);
+        winF.RemoveAppRoute(1);
+        check("remove: the selected entry goes away", FF<System.Windows.Controls.ListBox>("_appRoutes").Items.Count == 1 && winF.AddAppRoute("notepad", "typing") is null);
+        winF.AddAppRoute("custom-app", "custom");
+        FF<System.Windows.Controls.TextBox>("_customKey").Text = "Alt";
+        SaveF();
+        check("an invalid custom key is refused with a message and nothing changes", ErrorF().Contains("カスタムキー") && !File.ReadAllText(settings.ConfigPath).Contains("app_routes"));
+        FF<System.Windows.Controls.TextBox>("_customKey").Text = "";
+        SaveF();
+        check("a custom route without a custom key is refused by the shared validation", ErrorF().Contains("custom_key") && !File.ReadAllText(settings.ConfigPath).Contains("app_routes"));
+        FF<System.Windows.Controls.TextBox>("_customKey").Text = "ctrl-alt-v";
+        SaveF();
+        var sf = new JsonSettingsStore(settings.ConfigPath).Load().Settings;
+        check("saved: custom key Ctrl+Alt+V and the three app routes persisted in order",
+            sf.Insertion.CustomKey?.Display == "Ctrl+Alt+V" && string.Join(",", sf.Insertion.AppRoutes.Select(a => $"{a.Process}={InsertionRoutes.Name(a.Route)}")) == "HANE=shift-insert,notepad=typing,custom-app=custom"
+            && sf.Insertion.OverrideFor("hane") == InsertionRoute.ShiftInsert && sf.Insertion.Method == se.Insertion.Method);
         return true;
     }
 }

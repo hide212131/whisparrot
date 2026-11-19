@@ -81,6 +81,25 @@ internal sealed class FakeInjector : ITextInjector
     public InjectResult Next { get; set; } = new(InjectOutcome.Success);
     public bool Manual { get; set; }
 
+    /// <summary>CaptureTarget が返す投入先（録音開始時に呼ばれる）。</summary>
+    public IInjectTarget? NextTarget { get; set; }
+    public bool CaptureThrows { get; set; }
+    public int Captures { get; private set; }
+    public List<IInjectTarget?> TargetsSeen { get; } = [];
+
+    public IInjectTarget? CaptureTarget()
+    {
+        Captures++;
+        if (CaptureThrows) throw new InvalidOperationException("capture");
+        return NextTarget;
+    }
+
+    public Task<InjectResult> InjectAsync(string text, IInjectTarget? target, CancellationToken ct)
+    {
+        TargetsSeen.Add(target);
+        return InjectAsync(text, ct);
+    }
+
     public Task<InjectResult> InjectAsync(string text, CancellationToken ct)
     {
         Texts.Add(text);
@@ -104,3 +123,5 @@ internal static class Wait
         }
     }
 }
+
+internal sealed record FakeTarget(string Name) : IInjectTarget;

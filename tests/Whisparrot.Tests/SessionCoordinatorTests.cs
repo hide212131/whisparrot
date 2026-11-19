@@ -223,6 +223,86 @@ public sealed class SessionCoordinatorTests : IDisposable
         Assert.False(_c.Snapshot.HasPendingText);
     }
 
+    // ---- M10: 投入先は録音開始時に固定する ----
+
+    [Fact]
+    public async Task The_target_is_captured_when_recording_starts_and_used_for_the_injection_even_if_focus_moves_later()
+    {
+        var a = new FakeTarget("A");
+        _inj.NextTarget = a;
+        _c.Toggle(); await InState(SessionState.Recording);
+        Assert.Equal(1, _inj.Captures);
+        _inj.NextTarget = new FakeTarget("B"); // 録音中に別アプリへ移った（その時点の前景を取り直してはいけない）
+        _c.Toggle(); await InState(SessionState.Idle);
+        Assert.Equal(1, _inj.Captures);
+        Assert.Same(a, Assert.Single(_inj.TargetsSeen));
+    }
+
+    [Fact]
+    public async Task No_capturable_target_falls_back_to_the_foreground_at_injection_time()
+    {
+        _inj.NextTarget = null; // トレイから開始した場合など
+        _c.Toggle(); await InState(SessionState.Recording);
+        _c.Toggle(); await InState(SessionState.Idle);
+        Assert.Null(Assert.Single(_inj.TargetsSeen));
+    }
+
+    [Fact]
+    public async Task A_capture_that_throws_does_not_stop_recording_and_falls_back()
+    {
+        _inj.CaptureThrows = true;
+        _c.Toggle(); await InState(SessionState.Recording);
+        _c.Toggle(); await InState(SessionState.Idle);
+        Assert.Null(Assert.Single(_inj.TargetsSeen));
+        Assert.Single(_inj.Texts);
+    }
+
+    [Fact]
+    public async Task A_failed_recorded_injection_keeps_the_text_and_the_retry_targets_the_foreground_at_that_time()
+    {
+        var a = new FakeTarget("A");
+        _inj.NextTarget = a;
+        _inj.Next = new InjectResult(InjectOutcome.Failed, "入力先のウィンドウが見つかりません");
+        _c.Toggle(); await InState(SessionState.Recording);
+        _c.Toggle(); await InState(SessionState.Failed);
+        Assert.True(_c.Snapshot.HasPendingText);
+
+        _inj.Next = new InjectResult(InjectOutcome.Success);
+        _c.RetryInsert();
+        await InState(SessionState.Idle);
+        Assert.Equal(2, _inj.TargetsSeen.Count);
+        Assert.Same(a, _inj.TargetsSeen[0]);
+        Assert.Null(_inj.TargetsSeen[1]);
+        Assert.Equal(["こんにちは", "こんにちは"], _inj.Texts);
+    }
+
+    [Fact]
+    public async Task A_cancelled_recording_leaves_no_target_for_the_next_one()
+    {
+        _inj.NextTarget = new FakeTarget("A");
+        _c.Toggle(); await InState(SessionState.Recording);
+        _c.Cancel(); await InState(SessionState.Idle);
+        _inj.NextTarget = new FakeTarget("B");
+        _c.Toggle(); await InState(SessionState.Recording);
+        _c.Toggle(); await InState(SessionState.Idle);
+        Assert.Equal("B", Assert.IsType<FakeTarget>(Assert.Single(_inj.TargetsSeen)).Name);
+        Assert.Equal(2, _inj.Captures);
+    }
+
+    [Fact]
+    public async Task A_recorder_that_fails_to_start_does_not_leak_its_target_into_the_next_session()
+    {
+        _inj.NextTarget = new FakeTarget("A");
+        _rec.StartError = new InvalidOperationException("mic");
+        _c.Toggle(); await _c.FlushAsync();
+        Assert.Equal(SessionState.Idle, _c.Snapshot.State);
+        _rec.StartError = null;
+        _inj.NextTarget = null;
+        _c.Toggle(); await InState(SessionState.Recording);
+        _c.Toggle(); await InState(SessionState.Idle);
+        Assert.Null(Assert.Single(_inj.TargetsSeen));
+    }
+
     [Fact]
     public async Task Cancel_in_failed_state_discards_the_pending_text()
     {

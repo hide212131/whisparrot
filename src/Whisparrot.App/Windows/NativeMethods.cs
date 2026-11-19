@@ -18,7 +18,10 @@ internal static class NativeMethods
     public const uint CF_UNICODETEXT = 13;
     public const uint GMEM_MOVEABLE = 0x2;
     public const uint INPUT_KEYBOARD = 1;
+    public const uint KEYEVENTF_EXTENDEDKEY = 0x1;
     public const uint KEYEVENTF_KEYUP = 0x2;
+    public const uint KEYEVENTF_UNICODE = 0x4;
+    public const int SW_RESTORE = 9;
     public const uint WM_PASTE = 0x0302;
     public const uint SMTO_ABORTIFHUNG = 0x2;
     public const ushort VK_CONTROL = 0x11, VK_V = 0x56, VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_SHIFT = 0x10, VK_MENU = 0x12;
@@ -40,6 +43,27 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int cmd);
+
+    [DllImport("user32.dll")]
+    public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
     public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
