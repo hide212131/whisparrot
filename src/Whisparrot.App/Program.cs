@@ -18,6 +18,8 @@ internal static class Program
         // 認識ワーカー: 二重起動の mutex には掛けない（親が起動する子）。
         if (args.Contains(WorkerHost.Flag)) return WorkerHost.Run(args, resources, AppInfo.Version);
 
+        if (args.Length > 0 && args[0] == TranscribeCommand.Name) return TranscribeCommand.Run(args, resources);
+
         if (args.Length > 0 && args[0] == "--native-info") return Diagnostics.NativeInfo(resources);
         if (args.Length > 0 && args[0] == "--clipboard-probe") return Diagnostics.ClipboardProbe(args);
         if (args.Length > 0 && args[0] == "--inject-probe") return Diagnostics.InjectProbe(args);
