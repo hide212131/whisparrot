@@ -111,6 +111,15 @@ public sealed record InsertionSettings(InsertionMethod Method, Hotkey? CustomKey
 
 public sealed record UpdateSettings(DateTimeOffset? LastCheckAttemptUtc, DateTimeOffset? LastCheckSuccessUtc);
 
+/// <summary>
+/// Hane 連携（設計 §4.6）。<c>Enabled</c> はアプリ単位の連携（既定 OFF）、<c>InsertRawFirst</c> は連携内の「原文を先に挿入」（既定 ON、推奨）。
+/// 文書の抜粋・用語・要約の外部送信は W-3 以降で別の許可として足す。
+/// </summary>
+public sealed record HaneSettings(bool Enabled, bool InsertRawFirst)
+{
+    public static HaneSettings Default { get; } = new(false, true);
+}
+
 /// <summary>設計 §8.1 の config.json（schema 1）。</summary>
 public sealed record AppSettings(
     int SchemaVersion,
@@ -121,7 +130,8 @@ public sealed record AppSettings(
     ProxySettings Proxy,
     bool Autostart,
     InsertionSettings Insertion,
-    UpdateSettings Updates)
+    UpdateSettings Updates,
+    HaneSettings Hane)
 {
     public const int CurrentSchemaVersion = 1;
     public const int CleanupTimeoutSeconds = 15;
@@ -139,7 +149,8 @@ public sealed record AppSettings(
         new ProxySettings(ProxyMode.Environment, "", "", null),
         false,
         new InsertionSettings(InsertionMethod.Clipboard),
-        new UpdateSettings(null, null));
+        new UpdateSettings(null, null),
+        HaneSettings.Default);
 }
 
 public sealed record SettingsIssue(string Path, string Message)

@@ -142,7 +142,12 @@ internal sealed class TextInjector : ITextInjector
     };
 
     /// <summary>録音開始時に記録した投入先。Target は WM_PASTE の宛先（記録時点で解決済み）。</summary>
-    internal sealed record RecordedTarget(PasteTarget Target) : IInjectTarget;
+    internal sealed record RecordedTarget(PasteTarget Target) : IInjectTarget, Whisparrot.Core.Hane.IWindowTarget
+    {
+        // Hane 連携（設計 §2）は、録音開始時に記録した前景のトップレベルウィンドウと PID で相手を選ぶ。
+        long Whisparrot.Core.Hane.IWindowTarget.Hwnd => Target.Foreground.ToInt64();
+        uint Whisparrot.Core.Hane.IWindowTarget.Pid => Target.Pid;
+    }
 
     /// <summary>タスクバー・通知領域など、入力先にならないシェルのウィンドウ。記録時は「有効な対象なし」とする（トレイ操作で録音を始めた場合など）。</summary>
     private static readonly string[] ShellClasses = ["Shell_TrayWnd", "Shell_SecondaryTrayWnd", "NotifyIconOverflowWindow", "TopLevelWindowForOverflowXamlIsland"];

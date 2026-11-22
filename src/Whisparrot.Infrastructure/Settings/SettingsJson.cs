@@ -140,12 +140,16 @@ public static class SettingsJson
             var up = r.Object("updates");
             var updates = new UpdateSettings(up.Time("last_check_attempt_utc"), up.Time("last_check_success_utc"));
             up.Finish();
+
+            var hn = r.Object("hane");
+            var hane = new HaneSettings(hn.Bool("enabled", d.Hane.Enabled), hn.Bool("insert_raw_first", d.Hane.InsertRawFirst));
+            hn.Finish();
             r.Finish();
 
             if (issues.Count > 0) return new(SettingsLoadStatus.Invalid, AppSettings.Default, issues, version);
 
             var settings = new AppSettings(version, hotkey, mic, recognition, new CleanupSettings(provider, timeout, compatible, chatgpt),
-                proxy, autostart, insertion, updates);
+                proxy, autostart, insertion, updates, hane);
             var semantic = SettingsValidator.Validate(settings, now);
             return semantic.Count > 0
                 ? new(SettingsLoadStatus.Invalid, AppSettings.Default, semantic, version)
@@ -258,6 +262,14 @@ public static class SettingsJson
             WriteNullable(w, "last_check_attempt_utc", FormatTime(s.Updates.LastCheckAttemptUtc));
             WriteNullable(w, "last_check_success_utc", FormatTime(s.Updates.LastCheckSuccessUtc));
             w.WriteEndObject();
+            // 既定（連携 OFF・先行挿入 ON）のときは書かない: 利用者が選ばない限り、旧版が未知キーとして拒否する新キーを増やさない。
+            if (s.Hane != HaneSettings.Default)
+            {
+                w.WriteStartObject("hane");
+                w.WriteBoolean("enabled", s.Hane.Enabled);
+                w.WriteBoolean("insert_raw_first", s.Hane.InsertRawFirst);
+                w.WriteEndObject();
+            }
             w.WriteEndObject();
         }
         return new UTF8Encoding(false).GetBytes(Encoding.UTF8.GetString(ms.ToArray()) + "\n");

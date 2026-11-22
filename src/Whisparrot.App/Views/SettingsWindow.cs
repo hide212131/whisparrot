@@ -86,6 +86,8 @@ internal sealed class SettingsWindow : Window
     private readonly PasswordBox _pxPass = new();
     private readonly CheckBox _clearPxPass = new() { Content = "保存済みのパスワードを削除" };
 
+    private readonly CheckBox _haneEnabled = new() { Content = "Hane と連携する（開いている Markdown 文書の文脈を使って入力する）" };
+    private readonly CheckBox _haneRawFirst = new() { Content = "認識した原文を先に挿入し、整文できたら差し替える（推奨）", Margin = new Thickness(20, 0, 0, 0) };
     private readonly CheckBox _autostartBox = new() { Content = "ログオン時に自動起動する" };
     private readonly TextBlock _error = new() { Foreground = System.Windows.Media.Brushes.Firebrick, TextWrapping = TextWrapping.Wrap };
 
@@ -116,6 +118,7 @@ internal sealed class SettingsWindow : Window
             body.Children.Add(new TextBlock { Text = settings.LoadResult.Describe(), TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.Firebrick, Margin = new Thickness(0, 0, 0, 8) });
         body.Children.Add(BuildInput());
         body.Children.Add(BuildInsertion());
+        body.Children.Add(BuildHane());
         body.Children.Add(BuildRecognition());
         body.Children.Add(BuildCleanup());
         body.Children.Add(BuildNetwork());
@@ -508,6 +511,18 @@ internal sealed class SettingsWindow : Window
             new TextBlock { Text = "手動指定は http://host:port または https://host:port の形式（https:// はプロキシへの接続を TLS で行い、証明書は OS の信頼ストアで検証します）。", Foreground = System.Windows.Media.Brushes.DimGray });
     }
 
+    private UIElement BuildHane()
+    {
+        _haneEnabled.Checked += (_, _) => _haneRawFirst.IsEnabled = true;
+        _haneEnabled.Unchecked += (_, _) => _haneRawFirst.IsEnabled = false;
+        var note = (string text) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
+        return Group("Hane 連携",
+            _haneEnabled,
+            _haneRawFirst,
+            note("Hane 側でもローカル連携の許可が必要です。原文を先に入れると、整文前の原文が Hane の自動保存に残ることがあります。完成した文だけを入れたい場合は OFF にします。"
+                + "この版では、文書の内容を whisparrot の外へ送ることはありません。"));
+    }
+
     private UIElement BuildStartup() => Group("起動・更新", _autostartBox,
         new TextBlock { Text = $"whisparrot {AppInfo.DisplayVersion} / {RuntimeInformation.ProcessArchitecture}" },
         new Button { Content = "更新を確認（今後の版で有効）", IsEnabled = false, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 1, 10, 1) });
@@ -566,6 +581,9 @@ internal sealed class SettingsWindow : Window
         UpdateProxyAuthEnabled();
 
         _autostartBox.IsChecked = s.Autostart;
+        _haneEnabled.IsChecked = s.Hane.Enabled;
+        _haneRawFirst.IsChecked = s.Hane.InsertRawFirst;
+        _haneRawFirst.IsEnabled = s.Hane.Enabled;
         // ローカルの実行方式（最後のローカル結果）と、直近のセッションの認識先は別に表示する（クラウドの使用でローカルの欄は変わらない）。
         _backend.Text = "ローカルの実際の実行方式: " + (_backendText() ?? "未実行");
         _lastRecognition.Text = "今回の認識: " + (_lastRecognitionText?.Invoke() ?? "未実行");
@@ -677,6 +695,7 @@ internal sealed class SettingsWindow : Window
                 _pxUrl.Text.Trim(), _pxUser.Text.Trim(), pxPass,
                 _pxAuthWindows.IsChecked == true ? ProxyManualAuth.Windows : ProxyManualAuth.Credentials),
             Autostart = _autostartBox.IsChecked == true,
+            Hane = new HaneSettings(_haneEnabled.IsChecked == true, _haneRawFirst.IsChecked == true),
             Insertion = new InsertionSettings(cur.Insertion.Method, customKey, _appRouteItems.ToArray()),
         };
 
