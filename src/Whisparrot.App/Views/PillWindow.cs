@@ -134,6 +134,7 @@ internal sealed class PillWindow : Window
                 Present();
                 break;
             case SessionState.Inserting:
+            case SessionState.InsertingRaw:
                 SetLabel("入力中", cancelEnabled: false);
                 Present();
                 break;

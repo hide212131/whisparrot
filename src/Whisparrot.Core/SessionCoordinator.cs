@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using Whisparrot.Core.Hane;
 using Whisparrot.Core.Settings;
 
 namespace Whisparrot.Core;
@@ -12,6 +13,9 @@ public enum SessionState
     /// <summary>認識済みの原文を保持して整文中（設計 §3.3）。取消しても原文は投入しない。</summary>
     Polishing,
     Inserting,
+
+    /// <summary>Hane 連携で原文を先に挿入中（設計 §4.5）。編集要求の発行済みで取り消せない。挿入が確定すると Idle に戻り、整文は別ジョブとして続く。</summary>
+    InsertingRaw,
 
     /// <summary>認識済みだが未投入の一件を保持している（トレイから再試行・破棄）。</summary>
     Failed,
@@ -30,7 +34,7 @@ public sealed record SessionNotice(NoticeKind Kind, string Message);
 /// 長い処理（停止・認識・投入）はタスクとして走らせ、完了はセッション ID 付きのイベントとして戻す。
 /// 取消済みセッションの遅れた完了は ID の不一致で捨てる。
 /// </summary>
-public sealed class SessionCoordinator : IDisposable
+public sealed partial class SessionCoordinator : IDisposable
 {
     private abstract record Evt;
     private sealed record ToggleEvt : Evt;
@@ -61,13 +65,14 @@ public sealed class SessionCoordinator : IDisposable
     private RecognitionSetup.Ready? _recognize;          // 録音開始時に固定する認識の構え（クラウドの宛先・キーを含む）
     private IInjectTarget? _target;                      // 録音開始時に記録した投入先（最初の投入だけが使う。再試行は投入時点の前景）
 
-    public SessionCoordinator(IRecorder recorder, IRecognizer recognizer, ITextInjector injector, ITextPolisher? polisher = null)
-        : this(recorder, new FixedRecognitionSource(recognizer), injector, polisher)
+    public SessionCoordinator(IRecorder recorder, IRecognizer recognizer, ITextInjector injector, ITextPolisher? polisher = null, IHaneLink? hane = null)
+        : this(recorder, new FixedRecognitionSource(recognizer), injector, polisher, hane)
     {
     }
 
-    public SessionCoordinator(IRecorder recorder, IRecognitionSource recognition, ITextInjector injector, ITextPolisher? polisher = null)
+    public SessionCoordinator(IRecorder recorder, IRecognitionSource recognition, ITextInjector injector, ITextPolisher? polisher = null, IHaneLink? hane = null)
     {
+        _haneLink = hane;
         _recorder = recorder;
         _recognition = recognition;
         _injector = injector;
@@ -116,6 +121,7 @@ public sealed class SessionCoordinator : IDisposable
             try
             {
                 Handle(e);
+                PumpJobs();
             }
             catch (Exception ex)
             {
@@ -124,6 +130,7 @@ public sealed class SessionCoordinator : IDisposable
                 _sessionCts?.Cancel();
                 _pendingText = null;
                 _rawText = null;
+                ClearHaneSession();
                 Notify(NoticeKind.Error, $"内部エラー: {ex.GetType().Name}");
                 SetState(SessionState.Idle);
             }
@@ -144,6 +151,13 @@ public sealed class SessionCoordinator : IDisposable
             case RecognizedEvt r: OnRecognized(r); break;
             case PolishedEvt p: OnPolished(p); break;
             case InjectedEvt i: OnInjected(i); break;
+            case HaneContextEvt h: OnHaneContext(h); break;
+            case HaneInsertedEvt h: OnHaneInserted(h); break;
+            case JobPolishedEvt j: OnJobPolished(j); break;
+            case JobReplacedEvt j: OnJobReplaced(j); break;
+            case JobExpiredEvt j: OnJobExpired(j); break;
+            case DiscardHeldEvt: ReleaseHeld(); break;
+            case HeldExpiredEvt h: if (h.Seq == _heldSeq) ReleaseHeld(); break;
         }
     }
 
@@ -182,6 +196,7 @@ public sealed class SessionCoordinator : IDisposable
         _target = target;
         _polish = PreparePolish();
         SetState(SessionState.Recording);
+        StartHaneContext(target); // マイク開始後に非同期で取得する。録音開始は待たせない
     }
 
     private IInjectTarget? CaptureTarget()
@@ -304,6 +319,11 @@ public sealed class SessionCoordinator : IDisposable
             SetState(SessionState.Idle);
             return;
         }
+        if (UseHane() && _hane!.InsertRawFirst)
+        {
+            StartHaneInsert(text, rawFirst: true);
+            return;
+        }
         switch (_polish)
         {
             case PolishSetup.Ready ready:
@@ -312,10 +332,10 @@ public sealed class SessionCoordinator : IDisposable
             case PolishSetup.Unconfigured u:
                 // 整文を試みず原文を投入する。状態は控えめに知らせる。
                 Notify(NoticeKind.Warning, $"整文の設定が未完了のため、そのまま入力します（{u.Reason}）");
-                StartInject(text);
+                StartDeliver(text);
                 break;
             default:
-                StartInject(text);
+                StartDeliver(text);
                 break;
         }
     }
@@ -358,7 +378,7 @@ public sealed class SessionCoordinator : IDisposable
         var r = p.Result;
         if (r.IsSuccess && !string.IsNullOrWhiteSpace(r.Text))
         {
-            StartInject(r.Text.Trim());
+            StartDeliver(r.Text.Trim());
             return;
         }
         var why = r.IsSuccess ? "空の応答" : r.Failure switch
@@ -373,7 +393,7 @@ public sealed class SessionCoordinator : IDisposable
             _ => "応答を解釈できません",
         };
         Notify(NoticeKind.Warning, $"整文できなかったため、そのまま入力しました（{why}）");
-        StartInject(raw);
+        StartDeliver(raw);
     }
 
     private void StartInject(string text, bool retry = false)
@@ -446,7 +466,10 @@ public sealed class SessionCoordinator : IDisposable
                 _pendingText = null;
                 SetState(SessionState.Idle);
                 break;
-            // Inserting: 投入確定後は取消不可。
+            case SessionState.Idle:
+                CancelPolishJobs(); // 原文確定後の整文だけを取り消す
+                break;
+            // Inserting / InsertingRaw: 投入確定後は取消不可。
         }
     }
 
@@ -474,6 +497,7 @@ public sealed class SessionCoordinator : IDisposable
     private void SetState(SessionState state)
     {
         _state = state;
+        if (state is SessionState.Idle or SessionState.Failed) ClearHaneSession(); // 再試行は従来入力（利用者の明示操作）
         StateChanged?.Invoke(Snapshot);
     }
 
@@ -486,6 +510,7 @@ public sealed class SessionCoordinator : IDisposable
         try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
         _sessionCts?.Cancel();
         _sessionCts?.Dispose();
+        ShutdownHane();
         SafeCancelRecorder();
     }
 }

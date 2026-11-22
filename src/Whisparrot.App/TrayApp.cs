@@ -6,6 +6,7 @@ using Whisparrot.Core.Settings;
 using Whisparrot.Infrastructure;
 using Whisparrot.Infrastructure.Audio;
 using Whisparrot.Infrastructure.ChatGpt;
+using Whisparrot.Infrastructure.Hane;
 using Whisparrot.Infrastructure.Models;
 using Whisparrot.Infrastructure.Network;
 using Whisparrot.Infrastructure.Polish;
@@ -46,7 +47,9 @@ internal static class TrayApp
         var polisher = new SettingsTextPolisher(() => settings.Current, protector, network, chatGpt);
         // 認識の選択（local / cloud）は録音開始時に固定する。ローカルの準備確認・ワーカーは既存の WhisperRecognizer のまま。
         var recognition = new SettingsRecognizer(() => settings.Current, protector, network, recognizer);
-        var coordinator = new SessionCoordinator(recorder, recognition, injector, polisher);
+        // Hane 連携（設計 §4.6）。既定 OFF。ON のときだけ、録音開始時に前景の Hane へ文脈を取りにいく。
+        var haneLink = new SettingsHaneLink(() => settings.Current, new HaneClient());
+        var coordinator = new SessionCoordinator(recorder, recognition, injector, polisher, haneLink);
 
         var pill = new PillWindow();
         var hotkey = new HotkeyService();
@@ -94,6 +97,21 @@ internal static class TrayApp
         var cancelItem = menu.Items.Add("取消", null, (_, _) => coordinator.Cancel());
         var retryItem = menu.Items.Add("入力を再試行", null, (_, _) => coordinator.RetryInsert());
         retryItem.Visible = false;
+        // 確定できなかった一件（Hane への挿入の結果不明・差し替えの不成立）。コピーか破棄だけを提供し、自動では入力しない（設計 §4.5）。
+        var copyHeldItem = menu.Items.Add("保持した文をコピー", null, (_, _) =>
+        {
+            if (coordinator.Held is not { } held) return;
+            try { System.Windows.Clipboard.SetText(held.Text); coordinator.DiscardHeld(); }
+            catch (Exception ex) { tray.ShowBalloonTip(3000, "whisparrot", $"コピーできませんでした（{ex.GetType().Name}）", System.Windows.Forms.ToolTipIcon.Warning); }
+        });
+        var discardHeldItem = menu.Items.Add("保持した文を破棄", null, (_, _) => coordinator.DiscardHeld());
+        copyHeldItem.Visible = discardHeldItem.Visible = false;
+        coordinator.HeldChanged += held => app.Dispatcher.BeginInvoke(() =>
+        {
+            copyHeldItem.Visible = discardHeldItem.Visible = held is not null;
+            if (held is not null)
+                copyHeldItem.Text = held.Kind == HeldKind.PolishedNotApplied ? "整文結果をコピー" : "入力を確認できなかった文をコピー";
+        });
         var resetItem = menu.Items.Add("壊れた設定ファイルを退避して初期化", null, (_, _) =>
         {
             try
@@ -132,6 +150,7 @@ internal static class TrayApp
         // プロキシは次の通信（クライアント生成）から。ここでは待機中の認識子だけを解放する。
         settings.Changed += (old, next) => app.Dispatcher.BeginInvoke(() =>
         {
+            if (!old.Hane.Enabled && next.Hane.Enabled) _ = Task.Run(HaneClient.WarmUp);
             if (old.Recognition.Model != next.Recognition.Model
                 || (old.Recognition.Engine != next.Recognition.Engine && next.Recognition.Engine == RecognitionEngine.Cloud))
                 recognizer.ReleaseIdleWorker();
@@ -157,6 +176,7 @@ internal static class TrayApp
             if (adopted is null)
                 tray.ShowBalloonTip(4000, "whisparrot", "ホットキーを登録できませんでした。トレイのメニューから開始/停止できます。", System.Windows.Forms.ToolTipIcon.Warning);
 
+            if (settings.Current.Hane.Enabled) _ = Task.Run(HaneClient.WarmUp); // 初回の文脈取得を予算内に収める
             try { autostart.Apply(settings.Current.Autostart); } // exe を移動した後の修復を含む
             catch (Exception ex) { Console.WriteLine("autostart_sync_failed=" + ex.GetType().Name); }
 
