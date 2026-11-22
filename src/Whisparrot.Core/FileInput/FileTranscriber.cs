@@ -7,7 +7,7 @@ namespace Whisparrot.Core.FileInput;
 public enum TranscribeStatus
 {
     Ok = 0,
-    /// <summary>入力ファイルを読めない・非対応の形式（コード 3。このクラスの外で判定する）。</summary>
+    /// <summary>入力ファイルを読めない・非対応の形式（コード 3）。このクラスの外で判定し、出力ファイルは作らない。</summary>
     InputError = 3,
     /// <summary>認識を始められない・失敗・空（コード 4）。</summary>
     RecognitionFailed = 4,

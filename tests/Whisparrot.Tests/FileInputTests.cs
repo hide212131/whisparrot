@@ -52,7 +52,7 @@ public sealed class FileInputTests : IDisposable
         if (format.Encoding == WaveFormatEncoding.IeeeFloat) w.WriteSamples(f, 0, f.Length);
         else
             foreach (var v in f)
-                w.WriteSample(v); // 16 bit PCM は WriteSample が float を受ける
+                w.WriteSample(v);
         return path;
     }
 
@@ -299,12 +299,12 @@ public sealed class FileInputTests : IDisposable
     [Fact]
     public void A_failed_run_still_leaves_result_json_with_the_reason()
     {
-        var run = new TranscribeRun(TranscribeStatus.InputError, "未対応の形式です", null, null, null, null, PolishOutcome.Skipped, null, null);
+        var run = new TranscribeRun(TranscribeStatus.RecognitionFailed, "モデルが未取得です", null, null, null, null, PolishOutcome.Skipped, null, null);
         var written = TranscribeOutput.Write(_dir, "bad", Record(null) with { AudioDuration = null, DecodeTime = null }, run);
         Assert.Equal([Path.Combine(_dir, "bad.result.json")], written);
         using var doc = JsonDocument.Parse(File.ReadAllText(written[0]));
         Assert.False(doc.RootElement.GetProperty("success").GetBoolean());
-        Assert.Equal("未対応の形式です", doc.RootElement.GetProperty("error").GetString());
+        Assert.Equal("モデルが未取得です", doc.RootElement.GetProperty("error").GetString());
         Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("input").GetProperty("duration_seconds").ValueKind);
     }
 

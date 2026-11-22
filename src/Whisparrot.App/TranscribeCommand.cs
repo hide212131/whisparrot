@@ -55,7 +55,9 @@ internal static class TranscribeCommand
         }
         catch (Exception ex) when (ex is UnsupportedAudioException or FileNotFoundException or IOException or UnauthorizedAccessException)
         {
-            return Finish(Failed(TranscribeStatus.InputError, ex.Message), null);
+            // 入力そのものが使えない場合は何も書かない（存在しない入力の隣にフォルダやファイルを作らない）。
+            Console.Error.WriteLine(ex.Message);
+            return (int)TranscribeStatus.InputError;
         }
 
         if (settings is null) return Finish(Failed(TranscribeStatus.RecognitionFailed, load.Describe()), pcm);
