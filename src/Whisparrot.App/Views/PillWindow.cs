@@ -138,6 +138,11 @@ internal sealed class PillWindow : Window
                 SetLabel("入力中", cancelEnabled: false);
                 Present();
                 break;
+            case SessionState.Flushing:
+                // ストリーミングの停止後。録音中は従来のマイクレベルだけで、残りの処理を知らせるのはここだけ（設計 §4.3）。
+                SetLabel("残りを入力中", cancelEnabled: true);
+                Present();
+                break;
             case SessionState.Failed:
                 SetLabel("入力できませんでした", cancelEnabled: true);
                 Present();

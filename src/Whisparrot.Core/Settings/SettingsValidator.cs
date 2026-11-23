@@ -16,6 +16,9 @@ public static class SettingsValidator
         if (s.Recognition.Language != AppSettings.Language) Add("recognition.language", $"{AppSettings.Language} だけ対応しています");
         if (s.Cleanup.TimeoutSeconds != AppSettings.CleanupTimeoutSeconds) Add("cleanup.timeout_seconds", $"{AppSettings.CleanupTimeoutSeconds} 固定です");
 
+        if (s.Streaming.IntervalSeconds is < StreamingSettings.MinIntervalSeconds or > StreamingSettings.MaxIntervalSeconds)
+            Add("streaming.interval_seconds", $"{StreamingSettings.MinIntervalSeconds}〜{StreamingSettings.MaxIntervalSeconds} の整数で指定してください");
+
         ValidateInsertion(s.Insertion, Add);
 
         var cloud = s.Recognition.Cloud;

@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -9,7 +10,7 @@ namespace Whisparrot.Infrastructure.Audio;
 /// WASAPI 共有モードのマイク録音（既定の通信デバイスに追従）。入力を float mono に落とし、
 /// 停止時に 16 kHz へ変換して返す。どの終了経路（停止・取消・エラー・Dispose）でもデバイスを解放する。
 /// </summary>
-public sealed class WasapiRecorder(Func<string?>? deviceId = null) : IRecorder
+public sealed class WasapiRecorder(Func<string?>? deviceId = null) : IStreamingRecorder
 {
     /// <summary>停止要求後も取り込みを続ける時間。WASAPI のバッファに残る語尾を回収する。</summary>
     internal static readonly TimeSpan TailGrace = TimeSpan.FromMilliseconds(250);
@@ -26,10 +27,28 @@ public sealed class WasapiRecorder(Func<string?>? deviceId = null) : IRecorder
     private bool _userStopping;
     private long _lastLevelTicks;
 
+    // ストリーミング（設計 §1・§3）: 変換済みの 16 kHz フレームを有界バッファへ渡す。一括録音では使わない。
+    private FrameBuffer? _frames;
+    private StreamingResampler? _resampler;
+    private long _droppedTotal;
+
     public event Action<float>? LevelChanged;
     public event Action<RecorderError>? Failed;
 
-    public void Start()
+    /// <summary>連続取り込みのリング（サンプル数）。最大 2 秒（設計 §7）。</summary>
+    internal const int RingSamples = 2 * PcmAudio.SampleRate;
+
+    public long DroppedSamples => _frames?.Dropped ?? Interlocked.Read(ref _droppedTotal);
+
+    public void Start() => StartCore(streaming: false);
+
+    public ChannelReader<PcmFrame> StartStreaming()
+    {
+        StartCore(streaming: true);
+        return _frames!.Reader;
+    }
+
+    private void StartCore(bool streaming)
     {
         lock (_gate)
         {
@@ -48,7 +67,13 @@ public sealed class WasapiRecorder(Func<string?>? deviceId = null) : IRecorder
                 }
                 _capture = new WasapiCapture(_device);
                 _format = _capture.WaveFormat;
-                _mono = new List<float>(_format.SampleRate * 30);
+                if (streaming)
+                {
+                    _frames = new FrameBuffer(RingSamples);
+                    _resampler = new StreamingResampler(_format.SampleRate);
+                    Interlocked.Exchange(ref _droppedTotal, 0);
+                }
+                else _mono = new List<float>(_format.SampleRate * 30);
                 _stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 _userStopping = false;
                 _lastLevelTicks = 0;
@@ -61,6 +86,31 @@ public sealed class WasapiRecorder(Func<string?>? deviceId = null) : IRecorder
                 ReleaseLocked();
                 throw Translate(ex);
             }
+        }
+    }
+
+    public async Task StopStreamingAsync()
+    {
+        TaskCompletionSource stopped;
+        lock (_gate)
+        {
+            if (_capture is null || _stopped is null || _frames is null) throw new RecorderException(RecorderErrorKind.Other, "録音していません");
+            stopped = _stopped;
+        }
+        try
+        {
+            await Task.Delay(TailGrace).ConfigureAwait(false); // 既存の余韻回収
+            lock (_gate)
+            {
+                if (_capture is null) throw new RecorderException(RecorderErrorKind.Disconnected, "録音が中断されました");
+                _userStopping = true;
+                try { _capture.StopRecording(); } catch { /* 下で解放する */ }
+            }
+            await Task.WhenAny(stopped.Task, Task.Delay(StopTimeout)).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_gate) ReleaseLocked(); // チャンネルを完了させ、デバイスを解放する
         }
     }
 
@@ -111,10 +161,20 @@ public sealed class WasapiRecorder(Func<string?>? deviceId = null) : IRecorder
         float level;
         lock (_gate)
         {
-            if (_mono is null || _format is null) return;
-            var start = _mono.Count;
-            AppendMono(e.Buffer, e.BytesRecorded, _format, _mono);
-            level = Rms(_mono, start);
+            if (_frames is not null && _resampler is not null && _format is not null)
+            {
+                var chunk = new List<float>(e.BytesRecorded / Math.Max(1, _format.BitsPerSample / 8 * _format.Channels) + 1);
+                AppendMono(e.Buffer, e.BytesRecorded, _format, chunk);
+                level = Rms(chunk, 0);
+                _frames.Offer(_resampler.Process(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(chunk)));
+            }
+            else
+            {
+                if (_mono is null || _format is null) return;
+                var start = _mono.Count;
+                AppendMono(e.Buffer, e.BytesRecorded, _format, _mono);
+                level = Rms(_mono, start);
+            }
         }
         var now = Environment.TickCount64;
         if (now - _lastLevelTicks >= LevelInterval.TotalMilliseconds)
@@ -154,6 +214,13 @@ public sealed class WasapiRecorder(Func<string?>? deviceId = null) : IRecorder
         _device = null;
         _mono = null;
         _format = null;
+        if (_frames is not null)
+        {
+            Interlocked.Exchange(ref _droppedTotal, _frames.Dropped); // 停止後も DroppedSamples を読めるように残す
+            _frames.Complete();
+        }
+        _frames = null;
+        _resampler = null;
         var stopped = _stopped;
         _stopped = null;
         if (capture is not null)

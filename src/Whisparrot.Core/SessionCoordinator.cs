@@ -19,10 +19,13 @@ public enum SessionState
 
     /// <summary>認識済みだが未投入の一件を保持している（トレイから再試行・破棄）。</summary>
     Failed,
+
+    /// <summary>ストリーミングで録音を止め、残りの区間を認識・整文・入力している（設計 §5「残りを入力中」）。</summary>
+    Flushing,
 }
 
 /// <summary>UI が購読する状態のスナップショット。<paramref name="Engine"/> は進行中のセッションが録音開始時に固定した認識先（Idle では null）。</summary>
-public sealed record SessionSnapshot(SessionState State, long SessionId, bool HasPendingText, RecognitionEngine? Engine = null);
+public sealed record SessionSnapshot(SessionState State, long SessionId, bool HasPendingText, RecognitionEngine? Engine = null, bool IsStreaming = false);
 
 public enum NoticeKind { Info, Warning, Error }
 
@@ -65,13 +68,16 @@ public sealed partial class SessionCoordinator : IDisposable
     private RecognitionSetup.Ready? _recognize;          // 録音開始時に固定する認識の構え（クラウドの宛先・キーを含む）
     private IInjectTarget? _target;                      // 録音開始時に記録した投入先（最初の投入だけが使う。再試行は投入時点の前景）
 
-    public SessionCoordinator(IRecorder recorder, IRecognizer recognizer, ITextInjector injector, ITextPolisher? polisher = null, IHaneLink? hane = null)
-        : this(recorder, new FixedRecognitionSource(recognizer), injector, polisher, hane)
+    public SessionCoordinator(IRecorder recorder, IRecognizer recognizer, ITextInjector injector, ITextPolisher? polisher = null, IHaneLink? hane = null,
+        Func<StreamingSettings>? streaming = null)
+        : this(recorder, new FixedRecognitionSource(recognizer), injector, polisher, hane, streaming)
     {
     }
 
-    public SessionCoordinator(IRecorder recorder, IRecognitionSource recognition, ITextInjector injector, ITextPolisher? polisher = null, IHaneLink? hane = null)
+    public SessionCoordinator(IRecorder recorder, IRecognitionSource recognition, ITextInjector injector, ITextPolisher? polisher = null, IHaneLink? hane = null,
+        Func<StreamingSettings>? streaming = null)
     {
+        _streamingSettings = streaming;
         _haneLink = hane;
         _recorder = recorder;
         _recognition = recognition;
@@ -89,7 +95,7 @@ public sealed partial class SessionCoordinator : IDisposable
     /// <summary>認識が成功したときの実際の実行方式（設定画面の表示用）。</summary>
     public event Action<string>? BackendReported;
 
-    public SessionSnapshot Snapshot => new(_state, _sessionId, _pendingText is not null, _state == SessionState.Idle ? null : _recognize?.Engine);
+    public SessionSnapshot Snapshot => new(_state, _sessionId, _pendingText is not null, _state == SessionState.Idle ? null : _recognize?.Engine, _stream is not null);
 
     /// <summary>ホットキーまたはトレイの開始/停止。Idle なら録音開始、Recording なら停止。それ以外は無視。</summary>
     public void Toggle() => Post(new ToggleEvt());
@@ -127,6 +133,7 @@ public sealed partial class SessionCoordinator : IDisposable
             {
                 // 状態機械自身の想定外。資源を解放して待機へ戻す。
                 SafeCancelRecorder();
+                AbortStreamOnError();
                 _sessionCts?.Cancel();
                 _pendingText = null;
                 _rawText = null;
@@ -144,6 +151,14 @@ public sealed partial class SessionCoordinator : IDisposable
             case BarrierEvt b: b.Tcs.TrySetResult(); break;
             case ToggleEvt: OnToggle(); break;
             case StopEvt: if (_state == SessionState.Recording) BeginStop(); break;
+            case SegmentCutEvt s: OnSegmentCut(s); break;
+            case IntakeEndedEvt i: OnIntakeEnded(i); break;
+            case RecordingLimitEvt l: OnRecordingLimit(l); break;
+            case StreamStopFailedEvt f: OnStreamStopFailed(f); break;
+            case SegRecognizedEvt r: OnSegRecognized(r); break;
+            case SegPolishedEvt p: OnSegPolished(p); break;
+            case SegInjectedEvt i: OnSegInjected(i); break;
+            case StreamTickEvt t: OnStreamTick(t); break;
             case CancelEvt: OnCancel(); break;
             case RetryEvt: OnRetry(); break;
             case RecorderFailedEvt f: OnRecorderFailedEvt(f); break;
@@ -181,6 +196,7 @@ public sealed partial class SessionCoordinator : IDisposable
         }
         _sessionId++;
         var target = CaptureTarget();
+        if (TryBeginStreaming((RecognitionSetup.Ready)setup, target)) return;
         try
         {
             _recorder.Start();
@@ -220,6 +236,7 @@ public sealed partial class SessionCoordinator : IDisposable
 
     private void BeginStop()
     {
+        if (_stream is not null) { BeginStreamStop(); return; }
         if (_stopping) return;
         _stopping = true;
         var id = _sessionId;
@@ -442,6 +459,7 @@ public sealed partial class SessionCoordinator : IDisposable
 
     private void OnCancel()
     {
+        if (_stream is not null) { CancelStream(); return; }
         switch (_state)
         {
             case SessionState.Recording:
@@ -477,6 +495,7 @@ public sealed partial class SessionCoordinator : IDisposable
 
     private void OnRecorderFailedEvt(RecorderFailedEvt f)
     {
+        if (_stream is not null) { OnStreamRecorderFailed(f.Error); return; } // 区間の読み手の完了（IntakeEnded）と前後しうるので状態は問わない
         if (_state != SessionState.Recording) return;
         SafeCancelRecorder();
         _stopping = false;
@@ -512,6 +531,7 @@ public sealed partial class SessionCoordinator : IDisposable
         try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
         _sessionCts?.Cancel();
         _sessionCts?.Dispose();
+        AbortStreamOnError();
         ShutdownHane();
         SafeCancelRecorder();
     }

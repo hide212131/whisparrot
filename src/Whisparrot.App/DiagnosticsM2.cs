@@ -355,6 +355,23 @@ internal static partial class Diagnostics
         check("saved: custom key Ctrl+Alt+V and the three app routes persisted in order",
             sf.Insertion.CustomKey?.Display == "Ctrl+Alt+V" && string.Join(",", sf.Insertion.AppRoutes.Select(a => $"{a.Process}={InsertionRoutes.Name(a.Route)}")) == "HANE=shift-insert,notepad=typing,custom-app=custom"
             && sf.Insertion.OverrideFor("hane") == InsertionRoute.ShiftInsert && sf.Insertion.Method == se.Insertion.Method);
+
+        // ストリーミング入力（S-3）: 既定は OFF・8 秒で、ON と間隔の保存、範囲外・非整数の拒否を確かめる。
+        check("streaming: starts OFF with the 8 second default and the default is not written",
+            FF<System.Windows.Controls.CheckBox>("_streamingEnabled").IsChecked == false && FF<System.Windows.Controls.TextBox>("_streamingInterval").Text == "8"
+            && !File.ReadAllText(settings.ConfigPath).Contains("streaming"));
+        FF<System.Windows.Controls.CheckBox>("_streamingEnabled").IsChecked = true;
+        FF<System.Windows.Controls.TextBox>("_streamingInterval").Text = "3";
+        SaveF();
+        check("streaming: an interval outside 4-20 is refused with a message", ErrorF().Contains("streaming.interval_seconds")
+            && !File.ReadAllText(settings.ConfigPath).Contains("streaming"));
+        FF<System.Windows.Controls.TextBox>("_streamingInterval").Text = "8.5";
+        SaveF();
+        check("streaming: a non-integer interval is refused", ErrorF().Contains("streaming.interval_seconds"));
+        FF<System.Windows.Controls.TextBox>("_streamingInterval").Text = "12";
+        SaveF();
+        var ss = new JsonSettingsStore(settings.ConfigPath).Load().Settings.Streaming;
+        check("streaming: ON and 12 seconds are saved", ss.Enabled && ss.IntervalSeconds == 12);
         return true;
     }
 }
