@@ -113,11 +113,12 @@ public sealed record UpdateSettings(DateTimeOffset? LastCheckAttemptUtc, DateTim
 
 /// <summary>
 /// Hane 連携（設計 §4.6）。<c>Enabled</c> はアプリ単位の連携（既定 OFF）、<c>InsertRawFirst</c> は連携内の「原文を先に挿入」（既定 ON、推奨）。
-/// 文書の抜粋・用語・要約の外部送信は W-3 以降で別の許可として足す。
+/// <c>SendContextToPolish</c> は文書の抜粋・用語・タイトル・Front Matter 由来のメタデータを整文の接続先へ送る別の許可（既定 OFF。設計 §4.6）。
+/// 全文要約など他の外部送信は W-5 以降で別の許可として足す。
 /// </summary>
-public sealed record HaneSettings(bool Enabled, bool InsertRawFirst)
+public sealed record HaneSettings(bool Enabled, bool InsertRawFirst, bool SendContextToPolish = false)
 {
-    public static HaneSettings Default { get; } = new(false, true);
+    public static HaneSettings Default { get; } = new(false, true, false);
 }
 
 /// <summary>設計 §8.1 の config.json（schema 1）。</summary>

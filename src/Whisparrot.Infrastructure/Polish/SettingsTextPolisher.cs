@@ -37,7 +37,7 @@ public sealed class SettingsTextPolisher(Func<AppSettings> settings, ISecretProt
 
         var timeout = TimeSpan.FromSeconds(cleanup.TimeoutSeconds);
         var polisher = new CompatiblePolisher(network, uri, c.Model.Trim(), key, timeout);
-        return new PolishSetup.Ready(polisher.PolishAsync, timeout);
+        return new PolishSetup.Ready(polisher.PolishAsync, timeout) { PolishWithContextAsync = polisher.PolishAsync };
     }
 
     private PolishSetup PrepareChatGpt(CleanupSettings cleanup)
@@ -46,6 +46,7 @@ public sealed class SettingsTextPolisher(Func<AppSettings> settings, ISecretProt
         var model = cleanup.ChatGpt.Model.Trim();
         if (model.Length == 0) return new PolishSetup.Unconfigured("ChatGPT のモデル名が未設定です。設定で指定してください");
         var timeout = TimeSpan.FromSeconds(cleanup.TimeoutSeconds);
-        return new PolishSetup.Ready(new ChatGptPolisher(network, chatGpt, model, timeout).PolishAsync, timeout);
+        var polisher = new ChatGptPolisher(network, chatGpt, model, timeout);
+        return new PolishSetup.Ready(polisher.PolishAsync, timeout) { PolishWithContextAsync = polisher.PolishAsync };
     }
 }

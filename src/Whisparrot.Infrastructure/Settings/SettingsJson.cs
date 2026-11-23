@@ -142,7 +142,8 @@ public static class SettingsJson
             up.Finish();
 
             var hn = r.Object("hane");
-            var hane = new HaneSettings(hn.Bool("enabled", d.Hane.Enabled), hn.Bool("insert_raw_first", d.Hane.InsertRawFirst));
+            var hane = new HaneSettings(hn.Bool("enabled", d.Hane.Enabled), hn.Bool("insert_raw_first", d.Hane.InsertRawFirst),
+                hn.Bool("send_context_to_polish", d.Hane.SendContextToPolish));
             hn.Finish();
             r.Finish();
 
@@ -268,6 +269,7 @@ public static class SettingsJson
                 w.WriteStartObject("hane");
                 w.WriteBoolean("enabled", s.Hane.Enabled);
                 w.WriteBoolean("insert_raw_first", s.Hane.InsertRawFirst);
+                if (s.Hane.SendContextToPolish) w.WriteBoolean("send_context_to_polish", true); // 既定 OFF のときは書かない（旧版が未知キーとして拒否しない）
                 w.WriteEndObject();
             }
             w.WriteEndObject();

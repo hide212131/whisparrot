@@ -1,5 +1,4 @@
 using System.Net.Http.Headers;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Whisparrot.Core;
@@ -18,8 +17,6 @@ public sealed class CompatiblePolisher
     /// <summary>受信上限（UTF-8 で 1 MiB。超過は原文へ戻す）。</summary>
     public const int MaxResponseBytes = 1024 * 1024;
 
-    private static readonly Lazy<string> InstructionsText = new(LoadInstructions);
-
     private readonly NetworkContext _network;
     private readonly Uri _endpoint;
     private readonly string _model;
@@ -36,14 +33,17 @@ public sealed class CompatiblePolisher
     }
 
     /// <summary>固定の整文指示（実装リソース。利用者向けの編集機能はない）。</summary>
-    public static string Instructions => InstructionsText.Value;
+    public static string Instructions => PolishPrompts.Instructions;
 
     /// <summary>ベース URL（API root）の末尾の <c>/</c> を正規化して <c>chat/completions</c> を付ける。<c>/v1</c> を消さない。</summary>
     public static Uri ChatCompletionsUrl(Uri baseUrl) =>
         new(baseUrl.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/chat/completions");
 
     /// <summary>送るのは model / messages（system + user）/ stream:false だけ。temperature 等の任意パラメーターは送らない。</summary>
-    public static byte[] BuildRequestBody(string model, string rawText)
+    public static byte[] BuildRequestBody(string model, string rawText) => BuildRequestBody(model, new PolishInput(rawText));
+
+    /// <summary>文脈があれば文脈付きの固定指示（system）と JSON のユーザー入力、なければ従来と同一の要求。</summary>
+    public static byte[] BuildRequestBody(string model, PolishInput input)
     {
         using var ms = new MemoryStream();
         using (var w = new Utf8JsonWriter(ms))
@@ -53,11 +53,11 @@ public sealed class CompatiblePolisher
             w.WriteStartArray("messages");
             w.WriteStartObject();
             w.WriteString("role", "system");
-            w.WriteString("content", Instructions);
+            w.WriteString("content", PolishPrompts.InstructionsFor(input));
             w.WriteEndObject();
             w.WriteStartObject();
             w.WriteString("role", "user");
-            w.WriteString("content", rawText);
+            w.WriteString("content", PolishPrompts.UserContentFor(input));
             w.WriteEndObject();
             w.WriteEndArray();
             w.WriteBoolean("stream", false);
@@ -67,7 +67,10 @@ public sealed class CompatiblePolisher
     }
 
     /// <summary>整文を実行する。15 秒（設定値）の期限は接続・送信・受信の全体。<paramref name="ct"/> の取消だけが例外になる。</summary>
-    public async Task<PolishResult> PolishAsync(string rawText, CancellationToken ct)
+    public Task<PolishResult> PolishAsync(string rawText, CancellationToken ct) => PolishAsync(new PolishInput(rawText), ct);
+
+    /// <summary>文脈付きの整文（<see cref="PolishInput.Context"/> が null なら従来どおり）。期限・失敗の扱いは同じ。</summary>
+    public async Task<PolishResult> PolishAsync(PolishInput input, CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(_timeout);
@@ -76,7 +79,7 @@ public sealed class CompatiblePolisher
             using var client = _network.CreateClient(NetworkPurpose.Cleanup, timeout: Timeout.InfiniteTimeSpan);
             using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint)
             {
-                Content = new ByteArrayContent(BuildRequestBody(_model, rawText)),
+                Content = new ByteArrayContent(BuildRequestBody(_model, input)),
             };
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
             if (_apiKey is not null) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
@@ -162,12 +165,4 @@ public sealed class CompatiblePolisher
     private static bool HasNonEmpty(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null
         && !(v.ValueKind == JsonValueKind.Array && v.GetArrayLength() == 0);
-
-    private static string LoadInstructions()
-    {
-        using var s = typeof(CompatiblePolisher).Assembly.GetManifestResourceStream("cleanup-instructions.txt")
-            ?? throw new InvalidOperationException("cleanup-instructions.txt が埋め込まれていません");
-        using var r = new StreamReader(s, Encoding.UTF8);
-        return r.ReadToEnd().Replace("\r\n", "\n").TrimEnd('\n');
-    }
 }
