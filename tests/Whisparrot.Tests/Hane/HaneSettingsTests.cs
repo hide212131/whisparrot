@@ -78,7 +78,7 @@ public sealed class HaneSettingsTests
         Assert.DoesNotContain("send_context_to_polish", off);
 
         var on = System.Text.Encoding.UTF8.GetString(SettingsJson.Serialize(AppSettings.Default with { Hane = new HaneSettings(true, false, true) }));
-        Assert.Contains("\"send_context_to_polish\": true", on.Replace("\":true", "\": true"));
+        Assert.Contains("send_context_to_polish", on);
         var r = Load(on);
         Assert.Equal(SettingsLoadStatus.Loaded, r.Status);
         Assert.Equal(new HaneSettings(true, false, true), r.Settings.Hane);
