@@ -50,8 +50,8 @@ public sealed class PolishContextRequestTests : IDisposable
         Assert.Equal("前の文です。\n", u.GetProperty("before").GetString());
         Assert.Equal("続きの文。", u.GetProperty("after").GetString());
         Assert.Equal("設計メモ", u.GetProperty("title").GetString());
-        Assert.Equal(["tags: 設計"], u.GetProperty("metadata").EnumerateArray().Select(e => e.GetString()).ToArray());
-        Assert.Equal(["Hane", "整文"], u.GetProperty("terms").EnumerateArray().Select(e => e.GetString()).ToArray());
+        Assert.Equal(["tags: 設計"], u.GetProperty("metadata").EnumerateArray().Select(e => e.GetString()!).ToArray());
+        Assert.Equal(["Hane", "整文"], u.GetProperty("terms").EnumerateArray().Select(e => e.GetString()!).ToArray());
     }
 
     [Fact]
@@ -103,17 +103,16 @@ public sealed class PolishContextRequestTests : IDisposable
     }
 
     [Fact]
-    public void The_settings_polisher_offers_the_context_entry_for_the_compatible_connection_and_only_when_ready()
+    public async Task The_context_entry_is_used_only_when_the_polish_implementation_offers_one()
     {
-        // ChatGPT の構え（PolishWithContextAsync の設定）も同じ作りだが、実接続が要るため結合試験で確認する。
-        var ready = new PolishSetup.Ready((raw, _) => Task.FromResult(PolishResult.Success("legacy:" + raw)), TimeSpan.FromSeconds(1))
+                var ready = new PolishSetup.Ready((raw, _) => Task.FromResult(PolishResult.Success("legacy:" + raw)), TimeSpan.FromSeconds(1))
         {
             PolishWithContextAsync = (i, _) => Task.FromResult(PolishResult.Success("ctx:" + i.Utterance)),
         };
-        Assert.Equal("ctx:a", ready.RunAsync(new PolishInput("a", Ctx), CancellationToken.None).Result.Text);
-        Assert.Equal("legacy:a", ready.RunAsync(new PolishInput("a"), CancellationToken.None).Result.Text);
+        Assert.Equal("ctx:a", (await ready.RunAsync(new PolishInput("a", Ctx), CancellationToken.None)).Text);
+        Assert.Equal("legacy:a", (await ready.RunAsync(new PolishInput("a"), CancellationToken.None)).Text);
 
         var noCtxImpl = new PolishSetup.Ready((raw, _) => Task.FromResult(PolishResult.Success("legacy:" + raw)), TimeSpan.FromSeconds(1));
-        Assert.Equal("legacy:a", noCtxImpl.RunAsync(new PolishInput("a", Ctx), CancellationToken.None).Result.Text);
+        Assert.Equal("legacy:a", (await noCtxImpl.RunAsync(new PolishInput("a", Ctx), CancellationToken.None)).Text);
     }
 }

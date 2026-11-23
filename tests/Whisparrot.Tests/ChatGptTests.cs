@@ -480,7 +480,7 @@ public sealed class ChatGptTests : IDisposable
         using var input = JsonDocument.Parse(root.GetProperty("input").GetString()!);
         Assert.Equal(Raw, input.RootElement.GetProperty("utterance").GetString());
         Assert.Equal("前の文。", input.RootElement.GetProperty("before").GetString());
-        Assert.Equal(["Hane", "ホワイトボード"], input.RootElement.GetProperty("terms").EnumerateArray().Select(e => e.GetString()).ToArray());
+        Assert.Equal(["Hane", "ホワイトボード"], input.RootElement.GetProperty("terms").EnumerateArray().Select(e => e.GetString()!).ToArray());
     }
 
     [Fact]
