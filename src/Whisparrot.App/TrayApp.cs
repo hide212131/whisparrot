@@ -12,13 +12,15 @@ using Whisparrot.Infrastructure.Network;
 using Whisparrot.Infrastructure.Polish;
 using Whisparrot.Infrastructure.Recognition;
 using Whisparrot.Infrastructure.Settings;
+using Whisparrot.Infrastructure.Update;
+using Whisparrot.Core.Update;
 
 namespace Whisparrot.App;
 
 /// <summary>トレイ常駐の組み立て（設計 §3.1 の「起動時の構成箇所」）。Core の具象への結線はここだけ。</summary>
 internal static class TrayApp
 {
-    public static int Run(INativeResourceSource resources)
+    public static int Run(INativeResourceSource resources, bool afterUpdate = false)
     {
         var app = new System.Windows.Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
 
@@ -27,6 +29,10 @@ internal static class TrayApp
         var protector = new DpapiSecretProtector();
         var autostart = new AutostartService(Environment.ProcessPath!);
         var network = new NetworkContext(() => ProxyConfig.FromSettings(settings.Current.Proxy, protector), ProxyEnvironment.Capture());
+        // 更新: 現在の版が SemVer として読めないとき（開発ビルド等）は確認しない（UpdateService が扱う）。
+        var swapPlan = SwapPlan.For(Environment.ProcessPath!);
+        var currentVersion = SemVer.TryParse(AppInfo.DisplayVersion, out var cv) ? cv : null;
+        var updater = new UpdateService(settings, new ReleaseClient(network), currentVersion, swapPlan);
         WhisperRecognizer recognizer = null!;
         ModelManager models = null!;
         models = new ModelManager(AppPaths.ModelsDirectory, ModelCatalog.Embedded(), network,
@@ -64,17 +70,36 @@ internal static class TrayApp
         string? lastRecognition = null;
         coordinator.BackendReported += b => lastRecognition = b == "cloud" ? "クラウド" : $"ローカル（{b}）";
 
+        // 更新の適用: 現 exe を退避→新 exe を本来のパスへ→新版を起動、のあと自分は終了する。失敗したら旧版のまま続ける。
+        void ApplyUpdate()
+        {
+            var snap = coordinator.Snapshot;
+            if (snap.State != SessionState.Idle || snap.HasPendingText)
+            {
+                tray.ShowBalloonTip(3000, "whisparrot", "入力の処理中です。終わってから更新してください。", System.Windows.Forms.ToolTipIcon.Info);
+                return;
+            }
+            UpdateLauncher.Preload();
+            var result = ExeSwapper.Apply(swapPlan, () => UpdateLauncher.Start(swapPlan));
+            Console.WriteLine($"update_swap={result.Outcome}");
+            if (result.Outcome == SwapOutcome.Swapped) { app.Dispatcher.BeginInvoke(() => app.Shutdown()); return; }
+            tray.ShowBalloonTip(6000, "whisparrot", result.Outcome == SwapOutcome.RolledBack
+                ? $"更新を適用できませんでした。この版のまま続けます（{result.Detail}）" : "更新に失敗しました: " + result.Detail, System.Windows.Forms.ToolTipIcon.Warning);
+        }
+
         SettingsWindow? settingsWindow = null;
         void OpenSettings(string? notice = null)
         {
             if (settingsWindow is not null) { settingsWindow.Activate(); return; }
             settingsWindow = new SettingsWindow(settings, protector, models, network, chatGpt, autostart,
-                hk => (hotkey.TryReplace(hk, out var err), err), () => hotkey.Adopted, () => recognizer.LastBackend, notice, () => lastRecognition);
+                hk => (hotkey.TryReplace(hk, out var err), err), () => hotkey.Adopted, () => recognizer.LastBackend, notice, () => lastRecognition,
+                updater, ApplyUpdate);
             settingsWindow.Closed += (_, _) => settingsWindow = null;
             settingsWindow.Show();
             settingsWindow.Activate();
         }
 
+        var balloonOpensSettings = false;
         System.Windows.Forms.ToolStripItem engineItem = null!;
         void UpdateTrayText()
         {
@@ -93,6 +118,13 @@ internal static class TrayApp
         engineItem = menu.Items.Add("認識");
         engineItem.Enabled = false;
         menu.Items.Add("設定", null, (_, _) => OpenSettings());
+        menu.Items.Add("更新を確認", null, (_, _) => _ = updater.CheckAsync());
+        var updateItem = menu.Items.Add("更新", null, (_, _) =>
+        {
+            if (updater.State == UpdateState.Ready) ApplyUpdate();
+            else _ = updater.DownloadAsync();
+        });
+        updateItem.Visible = false;
         var toggleItem = menu.Items.Add("開始 / 停止", null, (_, _) => coordinator.Toggle());
         var cancelItem = menu.Items.Add("取消", null, (_, _) => coordinator.Cancel());
         var retryItem = menu.Items.Add("入力を再試行", null, (_, _) => coordinator.RetryInsert());
@@ -111,6 +143,28 @@ internal static class TrayApp
             copyHeldItem.Visible = discardHeldItem.Visible = held is not null;
             if (held is not null)
                 copyHeldItem.Text = held.Kind == HeldKind.PolishedNotApplied ? "整文結果をコピー" : "入力を確認できなかった文をコピー";
+        });
+        // 新しい版の通知はトレイのバルーン（クリックで設定を開く）。確認の失敗は通知しない。ダウンロードの失敗・準備完了は通知する。
+        updater.Changed += newlyAvailable => app.Dispatcher.BeginInvoke(() =>
+        {
+            var c = updater.Candidate;
+            updateItem.Visible = c is not null && updater.State is UpdateState.Available or UpdateState.Ready or UpdateState.Failed;
+            updateItem.Text = updater.State == UpdateState.Ready ? $"更新を適用（再起動）{c?.Tag}" : $"更新をダウンロード {c?.Tag}";
+            if (newlyAvailable)
+            {
+                balloonOpensSettings = true;
+                tray.ShowBalloonTip(5000, "whisparrot", $"新しい版 {c!.Tag} があります（クリックで設定を開く）", System.Windows.Forms.ToolTipIcon.Info);
+            }
+            else if (updater.State == UpdateState.Failed)
+            {
+                balloonOpensSettings = true;
+                tray.ShowBalloonTip(5000, "whisparrot", (updater.Message ?? "更新に失敗しました") + "（クリックで設定を開く）", System.Windows.Forms.ToolTipIcon.Warning);
+            }
+            else if (updater.State == UpdateState.Ready)
+            {
+                balloonOpensSettings = true;
+                tray.ShowBalloonTip(5000, "whisparrot", $"{c!.Tag} の準備ができました。設定または右クリックから再起動して更新できます", System.Windows.Forms.ToolTipIcon.Info);
+            }
         });
         var resetItem = menu.Items.Add("壊れた設定ファイルを退避して初期化", null, (_, _) =>
         {
@@ -136,7 +190,6 @@ internal static class TrayApp
             retryItem.Visible = s.State == SessionState.Failed;
         });
         // 失敗の通知は短く（3 秒以内）。クラウド認識の失敗は、通知をクリックして設定を開き原因を確認できる。
-        var balloonOpensSettings = false;
         coordinator.Noticed += n => app.Dispatcher.BeginInvoke(() =>
         {
             balloonOpensSettings = n.Kind == NoticeKind.Error && settings.Current.Recognition.Engine == RecognitionEngine.Cloud;
@@ -154,6 +207,7 @@ internal static class TrayApp
             if (old.Recognition.Model != next.Recognition.Model
                 || (old.Recognition.Engine != next.Recognition.Engine && next.Recognition.Engine == RecognitionEngine.Cloud))
                 recognizer.ReleaseIdleWorker();
+            if (old.Updates.IncludePrerelease != next.Updates.IncludePrerelease) _ = updater.CheckAsync(); // チャンネルを切り替えたら候補を取り直す
             UpdateTrayText();
         });
 
@@ -175,6 +229,16 @@ internal static class TrayApp
             Console.WriteLine($"hotkey_adopted={adopted?.Display ?? "(none)"}");
             if (adopted is null)
                 tray.ShowBalloonTip(4000, "whisparrot", "ホットキーを登録できませんでした。トレイのメニューから開始/停止できます。", System.Windows.Forms.ToolTipIcon.Warning);
+
+            // 更新: 再起動直後の起動が最後まで進んだ印（次回の通常起動で旧版の退避を片付ける）。起動時と 1 日 1 回の確認。
+            if (afterUpdate) ExeSwapper.MarkHealthy(swapPlan);
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5));
+                using var daily = new PeriodicTimer(TimeSpan.FromHours(24));
+                do { if (settings.Current.Updates.AutoCheck) await updater.CheckAsync(); }
+                while (await daily.WaitForNextTickAsync());
+            });
 
             if (settings.Current.Hane.Enabled) _ = Task.Run(HaneClient.WarmUp); // 初回の文脈取得を予算内に収める
             try { autostart.Apply(settings.Current.Autostart); } // exe を移動した後の修復を含む

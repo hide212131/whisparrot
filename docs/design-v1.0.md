@@ -403,6 +403,8 @@ S-04 の結果に、(a) 同梱版 / arch ごとの exe 増分・必要設定・�
 | `updates` | object | 子項目の既定値から構成。利用統計ではなく日次制御用のローカル状態 |
 | `updates.last_check_attempt_utc` | RFC3339 UTC string または null | `null`。日次の試行抑制に使う。将来時刻・破損値は検証エラー |
 | `updates.last_check_success_utc` | RFC3339 UTC string または null | `null`。直近の成功を表示。失敗時に成功日時を進めない |
+| `updates.auto_check` | boolean | `true`。起動時と 1 日 1 回の自動確認。`false` のときだけ書き出す（旧版へ未知キーを増やさない） |
+| `updates.include_prerelease` | boolean | `true`。プレリリースも更新対象にする。`false`（安定版のみ）のときだけ書き出す |
 
 全設定に JSON 型検証を行い、未知のキー・enum・不正値はパス付きのエラーにする。`schema_version` 以外の欠損は表の既定値で補う。存在するオブジェクトが null なら欠損と同一視せずエラーにする。設定画面の保存で無関係な秘密情報を再入力させず、伏せ字表示のままなら既存暗号文を維持する。
 

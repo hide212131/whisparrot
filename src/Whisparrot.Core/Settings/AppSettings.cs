@@ -109,7 +109,8 @@ public sealed record InsertionSettings(InsertionMethod Method, Hotkey? CustomKey
     public override int GetHashCode() => HashCode.Combine(Method, CustomKey, AppRoutes.Count);
 }
 
-public sealed record UpdateSettings(DateTimeOffset? LastCheckAttemptUtc, DateTimeOffset? LastCheckSuccessUtc);
+/// <summary><c>AutoCheck</c> は起動時と日次の自動確認（既定 ON）。<c>IncludePrerelease</c> はプレリリースも更新対象にする（既定 ON。安定版のみにもできる）。</summary>
+public sealed record UpdateSettings(DateTimeOffset? LastCheckAttemptUtc, DateTimeOffset? LastCheckSuccessUtc, bool AutoCheck = true, bool IncludePrerelease = true);
 
 /// <summary>
 /// Hane 連携（設計 §4.6）。<c>Enabled</c> はアプリ単位の連携（既定 OFF）、<c>InsertRawFirst</c> は連携内の「原文を先に挿入」（既定 ON、推奨）。

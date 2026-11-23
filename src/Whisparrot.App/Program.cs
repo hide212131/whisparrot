@@ -1,4 +1,5 @@
 using Whisparrot.App.Windows;
+using Whisparrot.Core.Update;
 using Whisparrot.Infrastructure.Recognition;
 
 namespace Whisparrot.App;
@@ -36,12 +37,23 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--chatgpt-logout") return Diagnostics.ChatGptLogout(args);
         if (args.Length > 0 && args[0] == "--write-transcription-config") return Diagnostics.WriteTranscriptionConfig(args);
         if (args.Length > 0 && args[0] == "--transcription-probe") return Diagnostics.TranscriptionProbe(args);
+        if (args.Length > 0 && args[0] == "--update-probe") return Diagnostics.UpdateProbe(args);
         if (args.Length > 0 && args[0] == "--hane-probe") return Diagnostics.HaneProbe(args);
         if (args.Length > 0 && args[0] == "--pipeline-file") return Diagnostics.PipelineFile(args, resources);
 
         using var mutex = new Mutex(true, SingletonMutexName, out var created);
-        if (!created) return 0; // 二重起動: 静かに終了する
+        // 更新直後の再起動: 旧プロセスが終了して mutex を手放すのを待つ。それ以外の二重起動は静かに終了する。
+        var afterUpdate = args.Contains(SwapPlan.RestartedArg);
+        if (!created)
+        {
+            if (!afterUpdate) return 0;
+            try { if (!mutex.WaitOne(TimeSpan.FromSeconds(15))) return 0; }
+            catch (AbandonedMutexException) { }
+        }
 
-        return TrayApp.Run(resources);
+        // 前回の新版が正常起動した印があれば、旧版の退避を片付ける（再起動直後の起動では消さない）。
+        ExeSwapper.CleanOnStart(SwapPlan.For(Environment.ProcessPath!), afterUpdate);
+
+        return TrayApp.Run(resources, afterUpdate);
     }
 }
