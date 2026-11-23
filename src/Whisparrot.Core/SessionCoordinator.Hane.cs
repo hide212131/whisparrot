@@ -43,8 +43,10 @@ public sealed partial class SessionCoordinator
     private enum JobPhase { Polishing, Waiting, Replacing }
 
     /// <summary>挿入済みの原文に対する整文と差し替え。録音スロットとは独立で、セッション ID ではなくジョブ ID で管理する。</summary>
-    private sealed class ReplaceJob(long id, HaneWindow window, IHaneClient client, HaneInserted inserted, string raw)
+    private sealed class ReplaceJob(long id, HaneWindow window, IHaneClient client, HaneInserted inserted, string raw, PolishInput input, Func<bool>? allowContext)
     {
+        public PolishInput Input { get; } = input;
+        public Func<bool>? AllowContext { get; } = allowContext;
         public long Id { get; } = id;
         public HaneWindow Window { get; } = window;
         public IHaneClient Client { get; } = client;
@@ -240,7 +242,7 @@ public sealed partial class SessionCoordinator
                     Notify(NoticeKind.Info, "整文の処理が混み合っているため、原文のままにしました");
                     return;
                 }
-                var job = new ReplaceJob(++_jobSeq, window, client, inserted, raw);
+                var job = new ReplaceJob(++_jobSeq, window, client, inserted, raw, BuildPolishInput(raw), _hane?.ContextAllowed);
                 _jobs.Add(job);
                 SyncJobCount();
                 RunJobPolish(job, ready);
@@ -259,7 +261,7 @@ public sealed partial class SessionCoordinator
             try
             {
                 // 整文側が期限を守らなくても、期限で原文維持へ進む（取消は結果を捨てる）。
-                var work = Task.Run(() => ready.PolishAsync(job.Raw, token), CancellationToken.None);
+                var work = Task.Run(() => RunPolish(ready, job.Input, job.AllowContext, token), CancellationToken.None);
                 _ = work.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
                 var winner = await Task.WhenAny(work, Task.Delay(ready.Timeout, token)).ConfigureAwait(false);
                 Post(new JobPolishedEvt(job.Id, winner == work
@@ -278,6 +280,29 @@ public sealed partial class SessionCoordinator
         // 範囲ハンドルの失効（既定 120 秒）。保留したまま過ぎたら原文を維持する。
         var remaining = TimeSpan.FromMilliseconds(Math.Max(0, job.Inserted.ExpiresAtTick - Environment.TickCount64));
         _ = Task.Delay(remaining, token).ContinueWith(t => { if (!t.IsCanceled) Post(new JobExpiredEvt(job.Id)); }, TaskScheduler.Default);
+    }
+
+    // ── 文脈付き整文（設計 §4.1 / §4.3 / §4.6）──
+
+    /// <summary>
+    /// 整文の入力。Hane の文脈があり、文脈送信が許可されていれば文脈つき、そうでなければ従来の発話だけ。
+    /// 文脈の取得に成功しても、許可が OFF・文脈が空のときは何も足さない（従来経路と同一の要求になる）。
+    /// </summary>
+    private PolishInput BuildPolishInput(string raw)
+    {
+        if (_hane is { } h && _haneCtx is { } ctx && h.ContextAllowed())
+        {
+            try { return new PolishInput(raw, PolishContextBuilder.Build(ctx)); }
+            catch { /* 文脈の組み立てに失敗しても整文は発話だけで続ける */ }
+        }
+        return new PolishInput(raw);
+    }
+
+    /// <summary>送信の直前にもう一度許可を確かめ、OFF になっていれば文脈を外して従来の整文にする。</summary>
+    private static Task<PolishResult> RunPolish(PolishSetup.Ready ready, PolishInput input, Func<bool>? allowContext, CancellationToken ct)
+    {
+        if (input.Context is not null && allowContext?.Invoke() != true) input = new PolishInput(input.Utterance);
+        return ready.RunAsync(input, ct);
     }
 
     private void OnJobPolished(JobPolishedEvt e)

@@ -87,6 +87,8 @@ internal sealed class SettingsWindow : Window
     private readonly CheckBox _clearPxPass = new() { Content = "保存済みのパスワードを削除" };
 
     private readonly CheckBox _haneEnabled = new() { Content = "Hane と連携する（開いている Markdown 文書の文脈を使って入力する）" };
+    private readonly CheckBox _haneSendContext = new() { Content = "整文に文書の抜粋・用語を使用する（文書の内容を整文の接続先へ送ります）", Margin = new Thickness(20, 0, 0, 0) };
+    private readonly TextBlock _haneSendDest = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(40, 0, 0, 0) };
     private readonly CheckBox _haneRawFirst = new() { Content = "認識した原文を先に挿入し、整文できたら差し替える（推奨）", Margin = new Thickness(20, 0, 0, 0) };
     private readonly CheckBox _autostartBox = new() { Content = "ログオン時に自動起動する" };
     private readonly TextBlock _error = new() { Foreground = System.Windows.Media.Brushes.Firebrick, TextWrapping = TextWrapping.Wrap };
@@ -513,14 +515,50 @@ internal sealed class SettingsWindow : Window
 
     private UIElement BuildHane()
     {
-        _haneEnabled.Checked += (_, _) => _haneRawFirst.IsEnabled = true;
-        _haneEnabled.Unchecked += (_, _) => _haneRawFirst.IsEnabled = false;
+        _haneEnabled.Checked += (_, _) => UpdateHaneEnabled();
+        _haneEnabled.Unchecked += (_, _) => UpdateHaneEnabled();
+        _haneSendContext.Checked += (_, _) => UpdateHaneSendDest();
+        _haneSendContext.Unchecked += (_, _) => UpdateHaneSendDest();
+        foreach (var r in new[] { _cleanOff, _cleanCompat, _cleanChatGpt })
+        {
+            r.Checked += (_, _) => UpdateHaneSendDest();
+            r.Unchecked += (_, _) => UpdateHaneSendDest();
+        }
+        _baseUrl.TextChanged += (_, _) => UpdateHaneSendDest();
         var note = (string text) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
         return Group("Hane 連携",
             _haneEnabled,
             _haneRawFirst,
-            note("Hane 側でもローカル連携の許可が必要です。原文を先に入れると、整文前の原文が Hane の自動保存に残ることがあります。完成した文だけを入れたい場合は OFF にします。"
-                + "この版では、文書の内容を whisparrot の外へ送ることはありません。"));
+            note("Hane 側でもローカル連携の許可が必要です。原文を先に入れると、整文前の原文が Hane の自動保存に残ることがあります。完成した文だけを入れたい場合は OFF にします。"),
+            _haneSendContext,
+            _haneSendDest,
+            new TextBlock
+            {
+                Text = "ON にすると、整文のたびに次の内容を、上の「整文」で設定した接続先へ送ります: カーソル直前の文（最大 1,200 文字）、直後の文（最大 200 文字）、"
+                    + "その近くから拾った固有名詞・専門用語（最大 24 件）、文書のタイトル、Front Matter の title / aliases / tags / terms（合計 200 文字まで。それ以外の Front Matter は送りません）。"
+                    + "Markdown のリンク先は除きます。OFF のときは認識したテキストだけを送って整文します。送った内容は whisparrot では保存せず、ログにも残しません。"
+                    + "接続先を変えたときは、この設定をもう一度確認してください。整文が OFF の場合は何も送られません。",
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = System.Windows.Media.Brushes.DimGray,
+                Margin = new Thickness(40, 0, 0, 4),
+            });
+    }
+
+    private void UpdateHaneEnabled()
+    {
+        var on = _haneEnabled.IsChecked == true;
+        _haneRawFirst.IsEnabled = on;
+        _haneSendContext.IsEnabled = on;
+        UpdateHaneSendDest();
+    }
+
+    /// <summary>文脈の送り先（現在の整文の選択）を許可の隣に示す。保存前の選択にも追従する。</summary>
+    private void UpdateHaneSendDest()
+    {
+        _haneSendDest.Text = _haneSendContext.IsChecked != true ? "現在: 文書の内容は送りません。"
+            : _cleanChatGpt.IsChecked == true ? "現在の送り先: ChatGPT（Sign in with ChatGPT）"
+            : _cleanCompat.IsChecked == true ? "現在の送り先: OpenAI 互換エンドポイント（" + (_baseUrl.Text.Trim().Length == 0 ? "ベース URL 未設定" : _baseUrl.Text.Trim()) + "）"
+            : "現在の送り先: なし（整文が OFF のため、何も送られません）";
     }
 
     private UIElement BuildStartup() => Group("起動・更新", _autostartBox,
@@ -583,7 +621,8 @@ internal sealed class SettingsWindow : Window
         _autostartBox.IsChecked = s.Autostart;
         _haneEnabled.IsChecked = s.Hane.Enabled;
         _haneRawFirst.IsChecked = s.Hane.InsertRawFirst;
-        _haneRawFirst.IsEnabled = s.Hane.Enabled;
+        _haneSendContext.IsChecked = s.Hane.SendContextToPolish;
+        UpdateHaneEnabled();
         // ローカルの実行方式（最後のローカル結果）と、直近のセッションの認識先は別に表示する（クラウドの使用でローカルの欄は変わらない）。
         _backend.Text = "ローカルの実際の実行方式: " + (_backendText() ?? "未実行");
         _lastRecognition.Text = "今回の認識: " + (_lastRecognitionText?.Invoke() ?? "未実行");
@@ -695,7 +734,7 @@ internal sealed class SettingsWindow : Window
                 _pxUrl.Text.Trim(), _pxUser.Text.Trim(), pxPass,
                 _pxAuthWindows.IsChecked == true ? ProxyManualAuth.Windows : ProxyManualAuth.Credentials),
             Autostart = _autostartBox.IsChecked == true,
-            Hane = new HaneSettings(_haneEnabled.IsChecked == true, _haneRawFirst.IsChecked == true),
+            Hane = new HaneSettings(_haneEnabled.IsChecked == true, _haneRawFirst.IsChecked == true, _haneSendContext.IsChecked == true),
             Insertion = new InsertionSettings(cur.Insertion.Method, customKey, _appRouteItems.ToArray()),
         };
 

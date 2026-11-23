@@ -463,6 +463,38 @@ public sealed class ChatGptTests : IDisposable
     // ---- 整文 adapter ----
 
     [Fact]
+    public async Task Polish_with_context_sends_the_context_instructions_and_a_json_input_and_keeps_store_false()
+    {
+        var svc = await LoggedIn();
+        var ctx = new PolishContext("前の文。", "後ろの文。", "議事録", ["tags: 会議"], ["Hane", "ホワイトボード"]);
+        var result = await new ChatGptPolisher(Direct(), svc, "test-model", TimeSpan.FromSeconds(15)).PolishAsync(new PolishInput(Raw, ctx), CancellationToken.None);
+        Assert.True(result.IsSuccess);
+
+        var req = _server.Requests.Single(r => r.Target == "/v1/responses");
+        using var doc = JsonDocument.Parse(req.Body!);
+        var root = doc.RootElement;
+        Assert.Equal(new[] { "input", "instructions", "model", "store", "stream" }, root.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal).ToArray());
+        Assert.False(root.GetProperty("store").GetBoolean());
+        Assert.Equal(PolishPrompts.ContextInstructions, root.GetProperty("instructions").GetString());
+        Assert.DoesNotContain("前の文。", root.GetProperty("instructions").GetString()); // 文脈は指示へ結合しない
+        using var input = JsonDocument.Parse(root.GetProperty("input").GetString()!);
+        Assert.Equal(Raw, input.RootElement.GetProperty("utterance").GetString());
+        Assert.Equal("前の文。", input.RootElement.GetProperty("before").GetString());
+        Assert.Equal(["Hane", "ホワイトボード"], input.RootElement.GetProperty("terms").EnumerateArray().Select(e => e.GetString()!).ToArray());
+    }
+
+    [Fact]
+    public async Task Polish_without_context_through_the_input_overload_is_byte_identical_to_the_legacy_request()
+    {
+        var svc = await LoggedIn();
+        await new ChatGptPolisher(Direct(), svc, "m", TimeSpan.FromSeconds(15)).PolishAsync(new PolishInput(Raw), CancellationToken.None);
+        var req = _server.Requests.Single(r => r.Target == "/v1/responses");
+        Assert.Equal(ChatGptPolisher.BuildRequestBody("m", Raw), req.Body);
+        Assert.Equal(CompatiblePolisher.Instructions, JsonDocument.Parse(req.Body!).RootElement.GetProperty("instructions").GetString());
+    }
+
+
+    [Fact]
     public async Task Polish_posts_to_responses_with_the_bearer_token_and_the_documented_body()
     {
         var svc = await LoggedIn();

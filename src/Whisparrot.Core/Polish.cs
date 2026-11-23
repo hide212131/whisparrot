@@ -31,7 +31,17 @@ public abstract record PolishSetup
     public sealed record Unconfigured(string Reason) : PolishSetup;
 
     /// <summary>整文を実行できる。<paramref name="Timeout"/> はキーの復号や接続を含む全体の期限。</summary>
-    public sealed record Ready(Func<string, CancellationToken, Task<PolishResult>> PolishAsync, TimeSpan Timeout) : PolishSetup;
+    public sealed record Ready(Func<string, CancellationToken, Task<PolishResult>> PolishAsync, TimeSpan Timeout) : PolishSetup
+    {
+        /// <summary>文脈付きの整文（設計 §4.3）。null の実装は文脈を扱えず、常に発話だけで整える。</summary>
+        public Func<PolishInput, CancellationToken, Task<PolishResult>>? PolishWithContextAsync { get; init; }
+
+        /// <summary>文脈があり実装が対応していれば文脈付きで、そうでなければ従来どおり発話だけで整文する。</summary>
+        public Task<PolishResult> RunAsync(PolishInput input, CancellationToken ct) =>
+            input.Context is not null && PolishWithContextAsync is not null
+                ? PolishWithContextAsync(input, ct)
+                : PolishAsync(input.Utterance, ct);
+    }
 }
 
 public interface ITextPolisher

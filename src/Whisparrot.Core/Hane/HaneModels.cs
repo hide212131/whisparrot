@@ -135,7 +135,12 @@ public abstract record HaneSetup
     /// <summary>連携 OFF。Hane へは何も送らない。</summary>
     public sealed record Off : HaneSetup;
 
-    public sealed record Ready(IHaneClient Client, bool InsertRawFirst) : HaneSetup;
+    public sealed record Ready(IHaneClient Client, bool InsertRawFirst) : HaneSetup
+    {
+        /// <summary>文書の抜粋・用語・タイトル・Front Matter 由来のメタデータを整文の接続先へ送ってよいか（設計 §4.6。既定 OFF）。
+        /// 録音開始時に一度、各整文の送信直前にもう一度確認する（設定が途中で OFF になったら送らない）。</summary>
+        public Func<bool> ContextAllowed { get; init; } = static () => false;
+    }
 }
 
 public interface IHaneLink

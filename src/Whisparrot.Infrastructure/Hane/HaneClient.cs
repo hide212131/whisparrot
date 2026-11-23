@@ -272,5 +272,7 @@ public sealed class HaneClient : IHaneClient
 public sealed class SettingsHaneLink(Func<Whisparrot.Core.Settings.AppSettings> settings, IHaneClient client) : IHaneLink
 {
     public HaneSetup Prepare() =>
-        settings().Hane is { Enabled: true } h ? new HaneSetup.Ready(client, h.InsertRawFirst) : new HaneSetup.Off();
+        settings().Hane is { Enabled: true } h
+            ? new HaneSetup.Ready(client, h.InsertRawFirst) { ContextAllowed = () => settings().Hane is { Enabled: true, SendContextToPolish: true } }
+            : new HaneSetup.Off();
 }

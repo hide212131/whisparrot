@@ -15,15 +15,18 @@ namespace Whisparrot.Infrastructure.ChatGpt;
 public sealed class ChatGptPolisher(NetworkContext network, ChatGptAuthService auth, string model, TimeSpan timeout)
 {
     /// <summary>送るのは model / instructions / input / stream:false / store:false だけ（応答を ChatGPT 側へ保存させない）。</summary>
-    public static byte[] BuildRequestBody(string model, string rawText)
+    public static byte[] BuildRequestBody(string model, string rawText) => BuildRequestBody(model, new PolishInput(rawText));
+
+    /// <summary>文脈があれば文脈付きの固定指示（<c>instructions</c>）と JSON の <c>input</c>、なければ従来と同一の要求。<c>store:false</c> は常に維持する。</summary>
+    public static byte[] BuildRequestBody(string model, PolishInput input)
     {
         using var ms = new MemoryStream();
         using (var w = new Utf8JsonWriter(ms))
         {
             w.WriteStartObject();
             w.WriteString("model", model);
-            w.WriteString("instructions", CompatiblePolisher.Instructions);
-            w.WriteString("input", rawText);
+            w.WriteString("instructions", PolishPrompts.InstructionsFor(input));
+            w.WriteString("input", PolishPrompts.UserContentFor(input));
             w.WriteBoolean("stream", false);
             w.WriteBoolean("store", false);
             w.WriteEndObject();
@@ -31,7 +34,9 @@ public sealed class ChatGptPolisher(NetworkContext network, ChatGptAuthService a
         return ms.ToArray();
     }
 
-    public async Task<PolishResult> PolishAsync(string rawText, CancellationToken ct)
+    public Task<PolishResult> PolishAsync(string rawText, CancellationToken ct) => PolishAsync(new PolishInput(rawText), ct);
+
+    public async Task<PolishResult> PolishAsync(PolishInput input, CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(timeout); // token 更新を含む全体の期限
@@ -43,7 +48,7 @@ public sealed class ChatGptPolisher(NetworkContext network, ChatGptAuthService a
             using var client = network.CreateClient(NetworkPurpose.Cleanup, timeout: Timeout.InfiniteTimeSpan);
             using var request = new HttpRequestMessage(HttpMethod.Post, auth.Endpoints.ResponsesUrl)
             {
-                Content = new ByteArrayContent(BuildRequestBody(model, rawText)),
+                Content = new ByteArrayContent(BuildRequestBody(model, input)),
             };
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);

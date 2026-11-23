@@ -345,13 +345,15 @@ public sealed partial class SessionCoordinator : IDisposable
         var cts = _sessionCts = new CancellationTokenSource();
         var id = _sessionId;
         _rawText = raw;
+        var input = BuildPolishInput(raw);
+        var allowContext = _hane?.ContextAllowed;
         SetState(SessionState.Polishing);
         _ = Task.Run(async () =>
         {
             try
             {
                 // 整文側の実装が期限を守らなくても、期限で必ず原文へ戻る（取消された場合はイベントを捨てられる）。
-                var work = Task.Run(() => ready.PolishAsync(raw, cts.Token), CancellationToken.None);
+                var work = Task.Run(() => RunPolish(ready, input, allowContext, cts.Token), CancellationToken.None);
                 _ = work.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
                 var winner = await Task.WhenAny(work, Task.Delay(ready.Timeout, cts.Token)).ConfigureAwait(false);
                 Post(new PolishedEvt(id, winner == work
