@@ -135,7 +135,7 @@ public static partial class PolishContextBuilder
     private static string TailTrim(string s, int max) => HeadScalars(s, max).TrimEnd(',', ' ');
 
     /// <summary>許可リスト（title / aliases / tags / terms）だけを読む。YAML は評価せず、タグ・アンカー・エイリアス・ブロックスカラー・マップは採らない。</summary>
-    private sealed record FrontMatterFields(string? Title, IReadOnlyList<string> Aliases, IReadOnlyList<string> Tags, IReadOnlyList<string> Terms)
+    private sealed partial record FrontMatterFields(string? Title, IReadOnlyList<string> Aliases, IReadOnlyList<string> Tags, IReadOnlyList<string> Terms)
     {
         public static FrontMatterFields Empty { get; } = new(null, [], [], []);
 
