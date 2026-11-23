@@ -10,6 +10,7 @@ using Whisparrot.Infrastructure.Models;
 using Whisparrot.Infrastructure.Network;
 using Whisparrot.Infrastructure.Recognition;
 using Whisparrot.Infrastructure.Settings;
+using Whisparrot.Infrastructure.Update;
 
 namespace Whisparrot.App.Views;
 
@@ -29,6 +30,8 @@ internal sealed class SettingsWindow : Window
     private readonly Func<Hotkey?> _adoptedHotkey;
     private readonly Func<string?> _backendText;
     private readonly Func<string?>? _lastRecognitionText;
+    private readonly UpdateService? _updater;
+    private readonly Action? _applyUpdate;
 
     private readonly CheckBox _ctrl = new() { Content = "Ctrl" }, _alt = new() { Content = "Alt" }, _shift = new() { Content = "Shift" }, _win = new() { Content = "Win" };
     private readonly ComboBox _key = new() { Width = 90 };
@@ -91,11 +94,18 @@ internal sealed class SettingsWindow : Window
     private readonly TextBlock _haneSendDest = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(40, 0, 0, 0) };
     private readonly CheckBox _haneRawFirst = new() { Content = "認識した原文を先に挿入し、整文できたら差し替える（推奨）", Margin = new Thickness(20, 0, 0, 0) };
     private readonly CheckBox _autostartBox = new() { Content = "ログオン時に自動起動する" };
+    private readonly CheckBox _autoCheckBox = new() { Content = "起動時と 1 日 1 回、更新を自動で確認する" };
+    private readonly CheckBox _prereleaseBox = new() { Content = "プレリリース版も更新の対象にする（オフにすると安定版のみ）" };
+    private readonly TextBlock _updateStatus = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly Button _checkButton = new() { Content = "更新を確認", HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 1, 10, 1) };
+    private readonly Button _updateAction = new() { HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 1, 10, 1), Visibility = Visibility.Collapsed };
     private readonly TextBlock _error = new() { Foreground = System.Windows.Media.Brushes.Firebrick, TextWrapping = TextWrapping.Wrap };
 
     public SettingsWindow(SettingsService settings, ISecretProtector protector, ModelManager models, NetworkContext network, ChatGptAuthService chatGpt,
-        AutostartService autostart, Func<Hotkey, (bool Ok, int Error)> tryHotkey, Func<Hotkey?> adoptedHotkey, Func<string?> backendText, string? notice, Func<string?>? lastRecognitionText = null)
+        AutostartService autostart, Func<Hotkey, (bool Ok, int Error)> tryHotkey, Func<Hotkey?> adoptedHotkey, Func<string?> backendText, string? notice, Func<string?>? lastRecognitionText = null,
+        UpdateService? updater = null, Action? applyUpdate = null)
     {
+        _updater = updater; _applyUpdate = applyUpdate;
         _settings = settings; _protector = protector; _models = models; _network = network; _chatGpt = chatGpt;
         _autostart = autostart; _tryHotkey = tryHotkey; _adoptedHotkey = adoptedHotkey; _backendText = backendText; _lastRecognitionText = lastRecognitionText;
 
@@ -131,6 +141,12 @@ internal sealed class SettingsWindow : Window
         Load(settings.Current);
         Loaded += async (_, _) => await RefreshModelStatusAsync();
         Closed += (_, _) => _login?.Dispose();
+        if (_updater is not null)
+        {
+            Action<bool> onChanged = _ => Dispatcher.BeginInvoke(RefreshUpdateUi);
+            _updater.Changed += onChanged;
+            Closed += (_, _) => _updater.Changed -= onChanged;
+        }
         Closing += (_, e) =>
         {
             if (_download is null) return;
@@ -561,9 +577,43 @@ internal sealed class SettingsWindow : Window
             : "現在の送り先: なし（整文が OFF のため、何も送られません）";
     }
 
-    private UIElement BuildStartup() => Group("起動・更新", _autostartBox,
-        new TextBlock { Text = $"whisparrot {AppInfo.DisplayVersion} / {RuntimeInformation.ProcessArchitecture}" },
-        new Button { Content = "更新を確認（今後の版で有効）", IsEnabled = false, HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 1, 10, 1) });
+    private UIElement BuildStartup()
+    {
+        _checkButton.Click += async (_, _) => { if (_updater is not null) await _updater.CheckAsync(); };
+        _updateAction.Click += async (_, _) =>
+        {
+            if (_updater is null) return;
+            if (_updater.State == UpdateState.Ready) _applyUpdate?.Invoke();
+            else await _updater.DownloadAsync();
+        };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+        _updateAction.Margin = new Thickness(8, 0, 0, 0);
+        buttons.Children.Add(_checkButton); buttons.Children.Add(_updateAction);
+        RefreshUpdateUi();
+        return Group("起動・更新", _autostartBox,
+            new TextBlock { Text = $"whisparrot {AppInfo.DisplayVersion} / {RuntimeInformation.ProcessArchitecture}" },
+            _autoCheckBox, _prereleaseBox, buttons, _updateStatus);
+    }
+
+    private void RefreshUpdateUi()
+    {
+        if (_updater is null) { _checkButton.IsEnabled = false; return; }
+        var c = _updater.Candidate;
+        var busy = _updater.State is UpdateState.Checking or UpdateState.Downloading;
+        _checkButton.IsEnabled = !busy && _updater.State != UpdateState.Ready;
+        _updateAction.Visibility = c is not null && _updater.State is UpdateState.Available or UpdateState.Ready or UpdateState.Failed ? Visibility.Visible : Visibility.Collapsed;
+        _updateAction.Content = _updater.State == UpdateState.Ready ? "再起動して更新" : "ダウンロード";
+        _updateStatus.Text = _updater.State switch
+        {
+            UpdateState.Checking => "確認しています…",
+            UpdateState.Available => $"新しい版 {c!.Tag} があります。",
+            UpdateState.Downloading => $"{c!.Tag} をダウンロードしています…",
+            UpdateState.Ready => $"{c!.Tag} の準備ができました。再起動して更新します（保存していない入力はありません）。",
+            UpdateState.Failed => _updater.Message ?? "更新に失敗しました。",
+            _ => _updater.Message ?? "",
+        };
+        _updateStatus.Foreground = _updater.State == UpdateState.Failed ? System.Windows.Media.Brushes.Firebrick : System.Windows.SystemColors.ControlTextBrush;
+    }
 
     private void UpdateDest()
     {
@@ -619,6 +669,8 @@ internal sealed class SettingsWindow : Window
         UpdateProxyAuthEnabled();
 
         _autostartBox.IsChecked = s.Autostart;
+        _autoCheckBox.IsChecked = s.Updates.AutoCheck;
+        _prereleaseBox.IsChecked = s.Updates.IncludePrerelease;
         _haneEnabled.IsChecked = s.Hane.Enabled;
         _haneRawFirst.IsChecked = s.Hane.InsertRawFirst;
         _haneSendContext.IsChecked = s.Hane.SendContextToPolish;
@@ -734,6 +786,7 @@ internal sealed class SettingsWindow : Window
                 _pxUrl.Text.Trim(), _pxUser.Text.Trim(), pxPass,
                 _pxAuthWindows.IsChecked == true ? ProxyManualAuth.Windows : ProxyManualAuth.Credentials),
             Autostart = _autostartBox.IsChecked == true,
+            Updates = cur.Updates with { AutoCheck = _autoCheckBox.IsChecked == true, IncludePrerelease = _prereleaseBox.IsChecked == true },
             Hane = new HaneSettings(_haneEnabled.IsChecked == true, _haneRawFirst.IsChecked == true, _haneSendContext.IsChecked == true),
             Insertion = new InsertionSettings(cur.Insertion.Method, customKey, _appRouteItems.ToArray()),
         };

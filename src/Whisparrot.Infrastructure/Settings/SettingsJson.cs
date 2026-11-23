@@ -138,7 +138,8 @@ public static class SettingsJson
             ins.Finish();
 
             var up = r.Object("updates");
-            var updates = new UpdateSettings(up.Time("last_check_attempt_utc"), up.Time("last_check_success_utc"));
+            var updates = new UpdateSettings(up.Time("last_check_attempt_utc"), up.Time("last_check_success_utc"),
+                up.Bool("auto_check", d.Updates.AutoCheck), up.Bool("include_prerelease", d.Updates.IncludePrerelease));
             up.Finish();
 
             var hn = r.Object("hane");
@@ -262,6 +263,9 @@ public static class SettingsJson
             w.WriteStartObject("updates");
             WriteNullable(w, "last_check_attempt_utc", FormatTime(s.Updates.LastCheckAttemptUtc));
             WriteNullable(w, "last_check_success_utc", FormatTime(s.Updates.LastCheckSuccessUtc));
+            // 既定（どちらも ON）のときは書かない: 旧版が未知キーとして拒否する新キーを、利用者が選ばない限り増やさない（hane と同じ流儀）。
+            if (!s.Updates.AutoCheck) w.WriteBoolean("auto_check", false);
+            if (!s.Updates.IncludePrerelease) w.WriteBoolean("include_prerelease", false);
             w.WriteEndObject();
             // 既定（連携 OFF・先行挿入 ON）のときは書かない: 利用者が選ばない限り、旧版が未知キーとして拒否する新キーを増やさない。
             if (s.Hane != HaneSettings.Default)
