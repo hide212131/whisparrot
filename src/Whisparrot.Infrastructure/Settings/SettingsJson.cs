@@ -146,12 +146,16 @@ public static class SettingsJson
             var hane = new HaneSettings(hn.Bool("enabled", d.Hane.Enabled), hn.Bool("insert_raw_first", d.Hane.InsertRawFirst),
                 hn.Bool("send_context_to_polish", d.Hane.SendContextToPolish));
             hn.Finish();
+
+            var st = r.Object("streaming");
+            var streaming = new StreamingSettings(st.Bool("enabled", d.Streaming.Enabled), st.Int("interval_seconds", d.Streaming.IntervalSeconds));
+            st.Finish();
             r.Finish();
 
             if (issues.Count > 0) return new(SettingsLoadStatus.Invalid, AppSettings.Default, issues, version);
 
             var settings = new AppSettings(version, hotkey, mic, recognition, new CleanupSettings(provider, timeout, compatible, chatgpt),
-                proxy, autostart, insertion, updates, hane);
+                proxy, autostart, insertion, updates, hane, streaming);
             var semantic = SettingsValidator.Validate(settings, now);
             return semantic.Count > 0
                 ? new(SettingsLoadStatus.Invalid, AppSettings.Default, semantic, version)
@@ -274,6 +278,14 @@ public static class SettingsJson
                 w.WriteBoolean("enabled", s.Hane.Enabled);
                 w.WriteBoolean("insert_raw_first", s.Hane.InsertRawFirst);
                 if (s.Hane.SendContextToPolish) w.WriteBoolean("send_context_to_polish", true); // 既定 OFF のときは書かない（旧版が未知キーとして拒否しない）
+                w.WriteEndObject();
+            }
+            // 既定（OFF・8 秒）のときは書かない: 利用者が選ばない限り、旧版が未知キーとして拒否する新キーを増やさない。
+            if (s.Streaming != StreamingSettings.Default)
+            {
+                w.WriteStartObject("streaming");
+                w.WriteBoolean("enabled", s.Streaming.Enabled);
+                w.WriteNumber("interval_seconds", s.Streaming.IntervalSeconds);
                 w.WriteEndObject();
             }
             w.WriteEndObject();

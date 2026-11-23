@@ -188,6 +188,126 @@ internal sealed class TextInjector : ITextInjector
 
     private const string NoTargetMessage = "入力先のウィンドウが見つかりません";
 
+    // ---- ストリーミングの厳密な投入（設計 §4.2）----
+
+    internal const string TargetChangedMessage = "入力先が変わったため、入力しませんでした";
+    internal const string CancelledMessage = "取消されたため、入力しませんでした";
+    internal const string AppliedUnknownMessage = "入力できたか確認できませんでした";
+
+    public Task<InjectResult> InjectSegmentAsync(string text, IInjectTarget target, CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<InjectResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try { tcs.SetResult(InjectStrictCore(text, target as RecordedTarget, ct, null)); }
+            catch (Exception ex) { tcs.SetResult(new InjectResult(InjectOutcome.Failed, $"入力に失敗しました: {ex.Message}", EffectUnknown: true)); }
+        }) { IsBackground = true, Name = "whisparrot-inject-seg" };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return tcs.Task;
+    }
+
+    /// <summary>投入時点で観測した、前景ウィンドウ・そのスレッドのフォーカス中コントロール・PID。</summary>
+    internal readonly record struct FocusSnapshot(IntPtr Foreground, IntPtr Focus, uint Pid);
+
+    /// <summary>
+    /// 記録した投入先と今の入力先を厳密に突き合わせる。前景のウィンドウ・PID・フォーカス中のコントロールがすべて記録と同じで、宛先のウィンドウが今も同じプロセスに存在するときだけ null
+    /// （一致）。違えば理由を返し、呼び出し側は何も送らない。再解決による代替コントロールへの投入や、記録した窓の自動前景化は行わない。
+    /// XAML アイランド（<see cref="PasteTarget.Hosted"/>）では、フォーカスが宛先の編集コントロール自体に見える状態も同じ入力先とみなす。
+    /// </summary>
+    internal static string? StrictMismatch(PasteTarget recorded, FocusSnapshot now, bool targetAlive)
+    {
+        if (now.Foreground != recorded.Foreground || now.Pid != recorded.Pid) return TargetChangedMessage;
+        if (now.Focus != recorded.Focus && !(recorded.Hosted && now.Focus == recorded.Target)) return TargetChangedMessage;
+        if (!targetAlive) return TargetChangedMessage;
+        return null;
+    }
+
+    private static string? CheckStrict(PasteTarget recorded)
+    {
+        var fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero) return TargetChangedMessage;
+        var tid = GetWindowThreadProcessId(fg, out var pid);
+        var info = new GUITHREADINFO { cbSize = (uint)Marshal.SizeOf<GUITHREADINFO>() };
+        var focus = tid != 0 && GetGUIThreadInfo(tid, ref info) ? info.hwndFocus : IntPtr.Zero;
+        var alive = IsWindow(recorded.Target) && GetWindowThreadProcessId(recorded.Target, out var tpid) != 0 && tpid == recorded.Pid;
+        return StrictMismatch(recorded, new FocusSnapshot(fg, focus, pid), alive);
+    }
+
+    /// <summary>
+    /// ストリーミングの区間の投入。クリップボード書き込み前と、貼り付け（またはキー）の送出直前に、記録した入力先を再確認する。
+    /// 送出の可能性がある時点からは別経路へ送出しない: WM_PASTE が時間切れ・失敗でも Ctrl+V へ落とさず、適用不明（EffectUnknown）として返す。
+    /// 取消（<paramref name="ct"/>）は副作用の直前まで有効。
+    /// </summary>
+    internal InjectResult InjectStrictCore(string text, RecordedTarget? recorded, CancellationToken ct, Action<string>? trace)
+    {
+        if (recorded is null) return Fail(NoTargetMessage);
+        var t = recorded.Target;
+        if (CheckStrict(t) is { } w0) return Fail(w0);
+        if (ct.IsCancellationRequested) return Fail(CancelledMessage);
+        if (!WaitModifiersReleased()) return Fail("修飾キーが押されたままです");
+        if (CheckStrict(t) is { } w1) return Fail(w1);
+        if (ct.IsCancellationRequested) return Fail(CancelledMessage);
+
+        var insertion = _insertion();
+        var strategy = DecideStrategy(PasteStrategy.Auto, insertion, t.Process);
+        trace?.Invoke($"target_mode=strict process={t.Process} strategy={StrategyName(strategy)}");
+        var sendPossible = false;
+        InjectResult result;
+        if (strategy == PasteStrategy.Typing)
+            result = TypeStrict(text, t, ct, () => sendPossible = true, trace);
+        else
+            result = InjectClipboard(text, () => StrictPaste(strategy, t, insertion, ct, () => sendPossible = true, trace), trace: trace);
+        // 送出の可能性があったあとの失敗は、入力できたか確認できない。
+        return result.Outcome == InjectOutcome.Failed && sendPossible
+            ? result with { Message = result.Message ?? AppliedUnknownMessage, EffectUnknown = true }
+            : result;
+    }
+
+    private static PasteSend StrictPaste(PasteStrategy strategy, PasteTarget t, InsertionSettings insertion, CancellationToken ct, Action markSendPossible, Action<string>? trace)
+    {
+        if (CheckStrict(t) is { } w) return new PasteSend(false, Routes.None, w);
+        if (ct.IsCancellationRequested) return new PasteSend(false, Routes.None, CancelledMessage);
+        var kind = Classify(t.TargetClass);
+        var viaMessage = strategy == PasteStrategy.PasteMessage || (strategy == PasteStrategy.Auto && kind != TargetKind.CustomDrawn);
+        if (viaMessage)
+        {
+            markSendPossible();
+            var m = SendPasteMessageTo(t.Target);
+            trace?.Invoke($"paste_message={m}");
+            // 時間切れでも対象が後で処理しうる。キー送信へ落とさず、適用不明として扱う。
+            return m == MessageResult.Delivered
+                ? new PasteSend(true, Routes.PasteMessage, TargetClass: t.TargetClass)
+                : new PasteSend(false, Routes.PasteMessage, AppliedUnknownMessage, t.TargetClass);
+        }
+        if (strategy == PasteStrategy.Custom && insertion.CustomKey is null) return new PasteSend(false, Routes.None, "カスタムキーが設定されていません");
+        var keyRoute = strategy switch { PasteStrategy.ShiftInsert => Routes.ShiftInsert, PasteStrategy.Custom => Routes.Custom, _ => Routes.CtrlV };
+        var (mods, vk) = strategy switch
+        {
+            PasteStrategy.ShiftInsert => (HotkeyModifiers.Shift, (uint)VK_INSERT),
+            PasteStrategy.Custom => (insertion.CustomKey!.Modifiers, insertion.CustomKey.VirtualKey),
+            _ => (HotkeyModifiers.Control, (uint)VK_V),
+        };
+        markSendPossible();
+        return new PasteSend(SendChord(mods, vk), keyRoute, TargetClass: t.TargetClass); // 前面化はしない（確認で前景が一致している）
+    }
+
+    private static InjectResult TypeStrict(string text, PasteTarget t, CancellationToken ct, Action markSendPossible, Action<string>? trace)
+    {
+        var norm = NormalizeTypingText(text);
+        foreach (var (start, length) in TypingChunks(norm))
+        {
+            if (CheckStrict(t) is { } w) return new InjectResult(InjectOutcome.Failed, w, Routes.Typing, t.TargetClass);
+            if (ct.IsCancellationRequested) return new InjectResult(InjectOutcome.Failed, CancelledMessage, Routes.Typing, t.TargetClass);
+            var inputs = BuildTypingInputs(norm.Substring(start, length));
+            markSendPossible();
+            if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>()) != inputs.Length)
+                return new InjectResult(InjectOutcome.Failed, "文字入力を送れませんでした", Routes.Typing, t.TargetClass);
+        }
+        trace?.Invoke("typing_sent=True");
+        return new InjectResult(InjectOutcome.Success, Route: Routes.Typing, TargetClass: t.TargetClass);
+    }
+
     /// <summary>
     /// 投入の本体。recorded があれば記録した投入先へ、無ければ投入時点の前景へ入れる。経路は forced（診断の強制指定）→ アプリ別上書き → auto。
     /// 宛先が使えなければ何も送らずクリップボードにも触れず失敗する。

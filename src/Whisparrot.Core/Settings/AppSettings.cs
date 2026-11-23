@@ -122,6 +122,19 @@ public sealed record HaneSettings(bool Enabled, bool InsertRawFirst, bool SendCo
     public static HaneSettings Default { get; } = new(false, true, false);
 }
 
+/// <summary>
+/// ストリーミング入力（設計 design-streaming §1）。<c>Enabled</c> は既定 OFF、<c>IntervalSeconds</c> は区間の目標間隔（整数 4〜20、既定 8）。
+/// 録音開始時に値を固定し、変更は次の録音から効く。
+/// </summary>
+public sealed record StreamingSettings(bool Enabled, int IntervalSeconds = StreamingSettings.DefaultIntervalSeconds)
+{
+    public const int DefaultIntervalSeconds = 8;
+    public const int MinIntervalSeconds = 4;
+    public const int MaxIntervalSeconds = 20;
+
+    public static StreamingSettings Default { get; } = new(false, DefaultIntervalSeconds);
+}
+
 /// <summary>設計 §8.1 の config.json（schema 1）。</summary>
 public sealed record AppSettings(
     int SchemaVersion,
@@ -133,7 +146,8 @@ public sealed record AppSettings(
     bool Autostart,
     InsertionSettings Insertion,
     UpdateSettings Updates,
-    HaneSettings Hane)
+    HaneSettings Hane,
+    StreamingSettings Streaming)
 {
     public const int CurrentSchemaVersion = 1;
     public const int CleanupTimeoutSeconds = 15;
@@ -152,7 +166,8 @@ public sealed record AppSettings(
         false,
         new InsertionSettings(InsertionMethod.Clipboard),
         new UpdateSettings(null, null),
-        HaneSettings.Default);
+        HaneSettings.Default,
+        StreamingSettings.Default);
 }
 
 public sealed record SettingsIssue(string Path, string Message)

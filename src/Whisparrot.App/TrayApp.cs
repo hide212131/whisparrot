@@ -55,7 +55,7 @@ internal static class TrayApp
         var recognition = new SettingsRecognizer(() => settings.Current, protector, network, recognizer);
         // Hane 連携（設計 §4.6）。既定 OFF。ON のときだけ、録音開始時に前景の Hane へ文脈を取りにいく。
         var haneLink = new SettingsHaneLink(() => settings.Current, new HaneClient());
-        var coordinator = new SessionCoordinator(recorder, recognition, injector, polisher, haneLink);
+        var coordinator = new SessionCoordinator(recorder, recognition, injector, polisher, haneLink, () => settings.Current.Streaming);
 
         var pill = new PillWindow();
         var hotkey = new HotkeyService();
@@ -142,7 +142,8 @@ internal static class TrayApp
         {
             copyHeldItem.Visible = discardHeldItem.Visible = held is not null;
             if (held is not null)
-                copyHeldItem.Text = held.Kind == HeldKind.PolishedNotApplied ? "整文結果をコピー" : "入力を確認できなかった文をコピー";
+                copyHeldItem.Text = held.Kind == HeldKind.PolishedNotApplied ? "整文結果をコピー"
+                    : held.Kind == HeldKind.StreamingNotInjected ? "入力できなかった区間をコピー" : "入力を確認できなかった文をコピー";
         });
         // 新しい版の通知はトレイのバルーン（クリックで設定を開く）。確認の失敗は通知しない。ダウンロードの失敗・準備完了は通知する。
         updater.Changed += newlyAvailable => app.Dispatcher.BeginInvoke(() =>

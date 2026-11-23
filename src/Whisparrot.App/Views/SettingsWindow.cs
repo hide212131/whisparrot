@@ -93,6 +93,8 @@ internal sealed class SettingsWindow : Window
     private readonly CheckBox _haneSendContext = new() { Content = "整文に文書の抜粋・用語を使用する（文書の内容を整文の接続先へ送ります）", Margin = new Thickness(20, 0, 0, 0) };
     private readonly TextBlock _haneSendDest = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(40, 0, 0, 0) };
     private readonly CheckBox _haneRawFirst = new() { Content = "認識した原文を先に挿入し、整文できたら差し替える（推奨）", Margin = new Thickness(20, 0, 0, 0) };
+    private readonly CheckBox _streamingEnabled = new() { Content = "ストリーミング入力（話し続けている間も、一定間隔で区切って入力する）" };
+    private readonly TextBox _streamingInterval = new() { Width = 50, MaxLength = 2, HorizontalAlignment = HorizontalAlignment.Left };
     private readonly CheckBox _autostartBox = new() { Content = "ログオン時に自動起動する" };
     private readonly CheckBox _autoCheckBox = new() { Content = "起動時と 1 日 1 回、更新を自動で確認する" };
     private readonly CheckBox _prereleaseBox = new() { Content = "プレリリース版も更新の対象にする（オフにすると安定版のみ）" };
@@ -130,6 +132,7 @@ internal sealed class SettingsWindow : Window
             body.Children.Add(new TextBlock { Text = settings.LoadResult.Describe(), TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.Firebrick, Margin = new Thickness(0, 0, 0, 8) });
         body.Children.Add(BuildInput());
         body.Children.Add(BuildInsertion());
+        body.Children.Add(BuildStreaming());
         body.Children.Add(BuildHane());
         body.Children.Add(BuildRecognition());
         body.Children.Add(BuildCleanup());
@@ -529,6 +532,19 @@ internal sealed class SettingsWindow : Window
             new TextBlock { Text = "手動指定は http://host:port または https://host:port の形式（https:// はプロキシへの接続を TLS で行い、証明書は OS の信頼ストアで検証します）。", Foreground = System.Windows.Media.Brushes.DimGray });
     }
 
+    private UIElement BuildStreaming()
+    {
+        _streamingEnabled.Checked += (_, _) => _streamingInterval.IsEnabled = true;
+        _streamingEnabled.Unchecked += (_, _) => _streamingInterval.IsEnabled = false;
+        var note = (string text) => new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
+        return Group("ストリーミング入力",
+            _streamingEnabled,
+            Row($"区間の間隔（秒、{StreamingSettings.MinIntervalSeconds}〜{StreamingSettings.MaxIntervalSeconds}）", _streamingInterval),
+            note("録音を続けたまま、この間隔ごとに区切って認識・整文し、順に入力します。クラウド認識のときだけ働き、ローカル認識と Hane 連携が有効なときは従来どおり一括で入力します。"
+                + "クラウド認識では、録音中から音声を区間ごとに送信します。整文を使う場合は、区間ごとの文を整文の接続先へ送ります。"
+                + "録音中は、入力先のウィンドウとカーソル位置を変えないでください。入力先が変わると、その時点で自動入力を止めます。"));
+    }
+
     private UIElement BuildHane()
     {
         _haneEnabled.Checked += (_, _) => UpdateHaneEnabled();
@@ -671,6 +687,9 @@ internal sealed class SettingsWindow : Window
         _autostartBox.IsChecked = s.Autostart;
         _autoCheckBox.IsChecked = s.Updates.AutoCheck;
         _prereleaseBox.IsChecked = s.Updates.IncludePrerelease;
+        _streamingEnabled.IsChecked = s.Streaming.Enabled;
+        _streamingInterval.Text = s.Streaming.IntervalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _streamingInterval.IsEnabled = s.Streaming.Enabled;
         _haneEnabled.IsChecked = s.Hane.Enabled;
         _haneRawFirst.IsChecked = s.Hane.InsertRawFirst;
         _haneSendContext.IsChecked = s.Hane.SendContextToPolish;
@@ -787,6 +806,8 @@ internal sealed class SettingsWindow : Window
                 _pxAuthWindows.IsChecked == true ? ProxyManualAuth.Windows : ProxyManualAuth.Credentials),
             Autostart = _autostartBox.IsChecked == true,
             Updates = cur.Updates with { AutoCheck = _autoCheckBox.IsChecked == true, IncludePrerelease = _prereleaseBox.IsChecked == true },
+            Streaming = new StreamingSettings(_streamingEnabled.IsChecked == true,
+                int.TryParse(_streamingInterval.Text.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var interval) ? interval : 0),
             Hane = new HaneSettings(_haneEnabled.IsChecked == true, _haneRawFirst.IsChecked == true, _haneSendContext.IsChecked == true),
             Insertion = new InsertionSettings(cur.Insertion.Method, customKey, _appRouteItems.ToArray()),
         };

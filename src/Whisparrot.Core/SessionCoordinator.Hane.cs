@@ -10,6 +10,9 @@ public enum HeldKind
 
     /// <summary>差し替えが反映されなかった（または確認できない）整文結果。</summary>
     PolishedNotApplied,
+
+    /// <summary>ストリーミングで入力できなかった（または入力を確認できなかった）直近の一区間。</summary>
+    StreamingNotInjected,
 }
 
 public sealed record HeldText(HeldKind Kind, string Text)

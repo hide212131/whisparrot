@@ -32,10 +32,40 @@ internal static partial class Diagnostics
     }
 
     /// <summary>--record-probe [ms] [--cancel]: 実マイクを短時間録音し、サンプル数・レベル通知回数を表示する。</summary>
+    /// <summary>--record-probe [ms] --streaming [--cancel]: 実マイクの連続取り込み（WasapiRecorder.StartStreaming）を確認する。フレームの連続性・総サンプル数・停止後のチャンネル完了を出す。</summary>
+    private static int RecordStreamingProbe(int ms, bool cancel)
+    {
+        using var rec = new WasapiRecorder();
+        var levels = 0;
+        rec.LevelChanged += _ => levels++;
+        System.Threading.Channels.ChannelReader<PcmFrame> reader;
+        try { reader = rec.StartStreaming(); }
+        catch (RecorderException ex) { Console.WriteLine($"start_failed kind={ex.Kind} message={ex.Message}"); return 2; }
+        long frames = 0, samples = 0, expected = 0, gaps = 0;
+        var done = Task.Run(async () =>
+        {
+            await foreach (var f in reader.ReadAllAsync())
+            {
+                frames++;
+                if (f.StartSample != expected) gaps++;
+                expected = f.StartSample + f.Samples.Length;
+                samples += f.Samples.Length;
+            }
+        });
+        Console.WriteLine("recording_streaming");
+        Thread.Sleep(ms);
+        var sw = Stopwatch.StartNew();
+        if (cancel) rec.Cancel(); else rec.StopStreamingAsync().GetAwaiter().GetResult();
+        var completed = done.Wait(3000);
+        Console.WriteLine($"frames={frames} samples={samples} seconds={samples / 16000.0:F2} gaps={gaps} dropped={rec.DroppedSamples} channel_completed={completed} stop_ms={sw.ElapsedMilliseconds} level_events={levels}");
+        return completed && gaps == 0 ? 0 : 1;
+    }
+
     public static int RecordProbe(string[] args)
     {
         var ms = args.Length > 1 && int.TryParse(args[1], out var v) ? v : 1500;
         var cancel = args.Contains("--cancel");
+        if (args.Contains("--streaming")) return RecordStreamingProbe(ms, cancel);
         using var rec = new WasapiRecorder();
         var levels = 0;
         float peak = 0;
@@ -167,7 +197,7 @@ internal static partial class Diagnostics
         {
             var pill = new Whisparrot.App.Views.PillWindow();
             var fg = Whisparrot.App.Windows.NativeMethods.GetForegroundWindow();
-            foreach (var st in new[] { SessionState.Recording, SessionState.Recognizing, SessionState.Inserting, SessionState.Failed })
+            foreach (var st in new[] { SessionState.Recording, SessionState.Recognizing, SessionState.Inserting, SessionState.Flushing, SessionState.Failed })
             {
                 pill.ShowState(st);
                 var hwnd = new System.Windows.Interop.WindowInteropHelper(pill).Handle;

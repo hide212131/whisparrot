@@ -40,6 +40,7 @@ internal static class Program
         if (args.Length > 0 && args[0] == "--update-probe") return Diagnostics.UpdateProbe(args);
         if (args.Length > 0 && args[0] == "--hane-probe") return Diagnostics.HaneProbe(args);
         if (args.Length > 0 && args[0] == "--pipeline-file") return Diagnostics.PipelineFile(args, resources);
+        if (args.Length > 0 && args[0] == "--streaming-probe") return Diagnostics.StreamingProbe(args);
 
         using var mutex = new Mutex(true, SingletonMutexName, out var created);
         // 更新直後の再起動: 旧プロセスが終了して mutex を手放すのを待つ。それ以外の二重起動は静かに終了する。

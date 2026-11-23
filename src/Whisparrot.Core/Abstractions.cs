@@ -56,7 +56,8 @@ public interface IRecognizer : IDisposable
 public enum InjectOutcome { Success, Failed }
 
 /// <summary>Route は実際に使った貼り付け経路（paste-message / send-input）、TargetClass は投入直前に解決した宛先のウィンドウクラス。持たない実装・失敗では null。</summary>
-public sealed record InjectResult(InjectOutcome Outcome, string? Message = null, string? Route = null, string? TargetClass = null);
+/// <param name="EffectUnknown">失敗だが、送出の可能性がありテキストが入ったか確認できない（ストリーミングの厳密な投入だけが立てる）。</param>
+public sealed record InjectResult(InjectOutcome Outcome, string? Message = null, string? Route = null, string? TargetClass = null, bool EffectUnknown = false);
 
 /// <summary>録音開始時に記録した投入先（ウィンドウとフォーカス中コントロール）。中身は実装だけが解釈する。</summary>
 public interface IInjectTarget { }
@@ -72,4 +73,11 @@ public interface ITextInjector
 
     /// <summary>記録した投入先へ入れる。<paramref name="target"/> が null なら <see cref="InjectAsync(string, CancellationToken)"/> と同じ（投入時点の前景）。</summary>
     Task<InjectResult> InjectAsync(string text, IInjectTarget? target, CancellationToken ct) => InjectAsync(text, ct);
+
+    /// <summary>
+    /// ストリーミングの区間を入れる（設計 §4.2）。記録した投入先を厳密に確認し、前景・フォーカス・宛先が記録と違えば何も送らず失敗する
+    /// （代替コントロールへの再解決・別の前景への投入・記録した窓の自動前景化をしない）。送出の可能性がある時点からは別経路へ落とさない。
+    /// <paramref name="ct"/> は副作用（クリップボード書き込み・送出）の直前まで有効。実装しない注入先は従来の投入と同じ。
+    /// </summary>
+    Task<InjectResult> InjectSegmentAsync(string text, IInjectTarget target, CancellationToken ct) => InjectAsync(text, target, ct);
 }
