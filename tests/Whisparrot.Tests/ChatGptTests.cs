@@ -463,7 +463,7 @@ public sealed class ChatGptTests : IDisposable
     // ---- 整文 adapter ----
 
     [Fact]
-    public async Task Polish_with_context_sends_the_context_instructions_and_a_json_input_and_keeps_store_false()
+    public async Task Polish_with_context_sends_the_context_instructions_and_a_json_input_and_keeps_stream_true_and_store_false()
     {
         var svc = await LoggedIn();
         var ctx = new PolishContext("前の文。", "後ろの文。", "議事録", ["tags: 会議"], ["Hane", "ホワイトボード"]);
@@ -477,7 +477,10 @@ public sealed class ChatGptTests : IDisposable
         Assert.False(root.GetProperty("store").GetBoolean());
         Assert.Equal(PolishPrompts.ContextInstructions, root.GetProperty("instructions").GetString());
         Assert.DoesNotContain("前の文。", root.GetProperty("instructions").GetString()); // 文脈は指示へ結合しない
-        using var input = JsonDocument.Parse(root.GetProperty("input").GetString()!);
+        Assert.True(root.GetProperty("stream").GetBoolean());
+        var msg = Assert.Single(root.GetProperty("input").EnumerateArray());
+        Assert.Equal("user", msg.GetProperty("role").GetString());
+        using var input = JsonDocument.Parse(msg.GetProperty("content").GetString()!);
         Assert.Equal(Raw, input.RootElement.GetProperty("utterance").GetString());
         Assert.Equal("前の文。", input.RootElement.GetProperty("before").GetString());
         Assert.Equal(["Hane", "ホワイトボード"], input.RootElement.GetProperty("terms").EnumerateArray().Select(e => e.GetString()!).ToArray());
@@ -511,9 +514,15 @@ public sealed class ChatGptTests : IDisposable
         Assert.Equal(new[] { "input", "instructions", "model", "store", "stream" }, root.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal).ToArray());
         Assert.Equal("test-model", root.GetProperty("model").GetString());
         Assert.Equal(CompatiblePolisher.Instructions, root.GetProperty("instructions").GetString());
-        Assert.Equal(Raw, root.GetProperty("input").GetString());
-        Assert.False(root.GetProperty("stream").GetBoolean());
+        Assert.Equal(JsonValueKind.Array, root.GetProperty("input").ValueKind);
+        var msg = Assert.Single(root.GetProperty("input").EnumerateArray());
+        Assert.Equal(new[] { "content", "role" }, msg.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal("user", msg.GetProperty("role").GetString());
+        Assert.Equal(Raw, msg.GetProperty("content").GetString());
+        Assert.True(root.GetProperty("stream").GetBoolean());
         Assert.False(root.GetProperty("store").GetBoolean());
+        foreach (var unsupported in new[] { "background", "conversation", "max_output_tokens", "metadata", "temperature", "top_p", "user" })
+            Assert.False(root.TryGetProperty(unsupported, out _), unsupported);
     }
 
     [Fact]
@@ -636,9 +645,130 @@ public sealed class ChatGptTests : IDisposable
     public async Task An_oversized_response_falls_back_with_TooLarge()
     {
         var svc = await LoggedIn();
-        _fake.ResponsesOverride = _ => new TestResponse(200, new byte[CompatiblePolisher.MaxResponseBytes + 10]);
+        _fake.ResponsesOverride = _ => Sse(Delta(new string('a', CompatiblePolisher.MaxResponseBytes + 10)), Completed());
         var r = await new ChatGptPolisher(Direct(), svc, "m", TimeSpan.FromSeconds(15)).PolishAsync(Raw, CancellationToken.None);
         Assert.Equal(PolishFailure.TooLarge, r.Failure);
+    }
+
+    // ---- SSE ----
+
+    private static string Delta(string d) => JsonSerializer.Serialize(new { type = "response.output_text.delta", delta = d });
+    private static string Completed(object? output = null) => JsonSerializer.Serialize(new { type = "response.completed", response = new { status = "completed", output = output ?? Array.Empty<object>() } });
+
+    internal static TestResponse Sse(params string[] dataLines) =>
+        new(200, Encoding.UTF8.GetBytes(string.Concat(dataLines.Select(d => "data: " + d + "\n\n"))), new() { ["Content-Type"] = "text/event-stream" });
+
+    private async Task<PolishResult> PolishWith(TestResponse response)
+    {
+        var svc = await LoggedIn();
+        _fake.ResponsesOverride = _ => response;
+        return await new ChatGptPolisher(Direct(), svc, "m", TimeSpan.FromSeconds(15)).PolishAsync(Raw, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Concatenated_deltas_are_the_result_on_completed()
+    {
+        var r = await PolishWith(Sse(
+            """{"type":"response.created","response":{"status":"in_progress"}}""",
+            Delta("明日は"), Delta("3時に"), Delta("会議です。"),
+            Completed(new[] { new { type = "message", content = new[] { new { type = "output_text", text = "別の本文" } } } })));
+        Assert.True(r.IsSuccess);
+        Assert.Equal("明日は3時に会議です。", r.Text); // delta の連結を正とする
+    }
+
+    [Fact]
+    public async Task Completed_without_deltas_falls_back_to_the_output_text()
+    {
+        var r = await PolishWith(Sse(Completed(new[] { new { type = "message", content = new[] { new { type = "output_text", text = "整えた。" } } } })));
+        Assert.True(r.IsSuccess);
+        Assert.Equal("整えた。", r.Text);
+    }
+
+    [Fact]
+    public async Task Completed_without_deltas_or_output_is_Empty()
+    {
+        var r = await PolishWith(Sse(Completed()));
+        Assert.Equal(PolishFailure.Empty, r.Failure);
+    }
+
+    [Fact]
+    public async Task Whitespace_only_deltas_are_Empty()
+    {
+        var r = await PolishWith(Sse(Delta(" "), Delta("\n"), Completed()));
+        Assert.Equal(PolishFailure.Empty, r.Failure);
+    }
+
+    [Fact]
+    public async Task Failed_event_falls_back_with_the_error_code_in_the_detail()
+    {
+        var r = await PolishWith(Sse(Delta("途中"), """{"type":"response.failed","response":{"error":{"code":"server_error","message":"boom"}}}"""));
+        Assert.False(r.IsSuccess);
+        Assert.Equal(PolishFailure.Error, r.Failure);
+        Assert.Contains("server_error", r.Detail);
+        Assert.Contains("boom", r.Detail);
+    }
+
+    [Fact]
+    public async Task Failed_detail_is_truncated_and_never_contains_the_token()
+    {
+        var r = await PolishWith(Sse(JsonSerializer.Serialize(new { type = "response.failed", response = new { error = new { code = "c", message = new string('x', 1000) } } })));
+        Assert.InRange(r.Detail!.Length, 1, 200);
+        Assert.DoesNotContain("at-1", r.Detail);
+    }
+
+    [Fact]
+    public async Task Failed_event_without_an_error_has_no_detail()
+    {
+        var r = await PolishWith(Sse("""{"type":"response.failed","response":{}}"""));
+        Assert.Equal(PolishFailure.Error, r.Failure);
+        Assert.Null(r.Detail);
+    }
+
+    [Fact]
+    public async Task Incomplete_event_falls_back_even_with_partial_deltas()
+    {
+        var r = await PolishWith(Sse(Delta("途中"), """{"type":"response.incomplete","response":{"status":"incomplete"}}"""));
+        Assert.Equal(PolishFailure.Incomplete, r.Failure);
+    }
+
+    [Fact]
+    public async Task A_stream_ending_without_a_terminal_event_falls_back()
+    {
+        var r = await PolishWith(Sse(Delta("途中まで")));
+        Assert.False(r.IsSuccess);
+        Assert.Equal(PolishFailure.Incomplete, r.Failure);
+    }
+
+    [Fact]
+    public async Task A_stream_cut_off_mid_event_falls_back()
+    {
+        var bytes = Encoding.UTF8.GetBytes("data: " + Delta("途中") + "\n\ndata: {\"type\":\"response.compl");
+        var r = await PolishWith(new TestResponse(200, bytes, new() { ["Content-Type"] = "text/event-stream" }));
+        Assert.False(r.IsSuccess);
+    }
+
+    [Fact]
+    public async Task Repeated_unreadable_events_fall_back_as_Malformed()
+    {
+        var r = await PolishWith(Sse("<html>", "not json", "{broken", Completed()));
+        Assert.Equal(PolishFailure.Malformed, r.Failure);
+    }
+
+    [Fact]
+    public async Task A_single_unreadable_event_is_skipped()
+    {
+        var r = await PolishWith(Sse(Delta("整えた。"), "not json", Completed()));
+        Assert.Equal("整えた。", r.Text);
+    }
+
+    [Fact]
+    public async Task A_refusal_completed_without_text_is_not_a_success()
+    {
+        var r = await PolishWith(Sse(
+            """{"type":"response.refusal.delta","delta":"お断りします"}""",
+            Completed(new[] { new { type = "message", content = new[] { new { type = "refusal", refusal = "お断りします" } } } })));
+        Assert.False(r.IsSuccess);
+        Assert.Equal(PolishFailure.Malformed, r.Failure);
     }
 
     // ---- 設定からの構え ----
@@ -747,12 +877,10 @@ internal sealed class FakeChatGptServer
             {
                 if (ResponsesOverride is { } o) return o(r);
                 if (r.Headers.GetValueOrDefault("Authorization") != $"Bearer at-{_issued}") return TestHttpServer.Json(401, new { error = "bad token" });
-                return TestHttpServer.Json(200, new
-                {
-                    id = "resp_1",
-                    status = "completed",
-                    output = new object[] { new { type = "message", role = "assistant", content = new object[] { new { type = "output_text", text = "明日は3時に会議です。" } } } },
-                });
+                return ChatGptTests.Sse(
+                    JsonSerializer.Serialize(new { type = "response.output_text.delta", delta = "明日は3時に" }),
+                    JsonSerializer.Serialize(new { type = "response.output_text.delta", delta = "会議です。" }),
+                    JsonSerializer.Serialize(new { type = "response.completed", response = new { id = "resp_1", status = "completed", output = Array.Empty<object>() } }));
             }
             return new TestResponse(404, []);
         }
