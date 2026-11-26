@@ -73,6 +73,23 @@ public sealed class EngineRegistrationTests : IDisposable
     }
 
     [Fact]
+    public void The_default_project_version_is_not_older_than_the_minimum_the_consumer_accepts()
+    {
+        // 版付けなしの publish でも、登録される版（3要素アセンブリ版）が古すぎると判定されないこと。
+        var props = File.ReadAllText(Path.Combine(RepoRoot(), "Directory.Build.props"));
+        var declared = System.Text.RegularExpressions.Regex.Match(props, @"<Version>(\d+\.\d+\.\d+)</Version>").Groups[1].Value;
+        Assert.True(Version.TryParse(declared, out var v), "Directory.Build.props の Version が3要素で読めること");
+        Assert.True(v >= new Version(0, 4, 0), $"既定の Version {declared} は連携側の下限 0.4.0 以上であること");
+
+        // 実際にビルドされたアセンブリの版も宣言と一致し（版付けなしのテストビルド）、登録に書かれる形（ToString(3)）になる。
+        var built = typeof(EngineRegistration).Assembly.GetName().Version!.ToString(3);
+        Assert.Equal(declared, built);
+
+        EngineRegistration.Write(RegPath, Path.Combine(_dir, "whisparrot.exe"), built, DateTimeOffset.UtcNow);
+        Assert.Equal(declared, Read()["version"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void Default_location_is_under_local_app_data_whisparrot()
     {
         var expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "whisparrot", "engine-registration.json");
