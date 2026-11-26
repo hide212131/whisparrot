@@ -35,6 +35,10 @@ public sealed partial class SessionCoordinator
         public bool RawFallback { get; set; }   // 整文を使う設定で、整文できず原文を確定した
         public long PolishDeadlineTs { get; set; }
         public CancellationTokenSource? Cts { get; set; }
+        public string? Code { get; set; }        // エンジンモード: 欠落（Dropped）の理由コード
+        public string? PolishCode { get; set; }  // エンジンモード: 原文へ戻った理由コード
+        public bool RawSent { get; set; }
+        public bool PolishSent { get; set; }
     }
 
     private sealed class StreamRun(long id, CancellationTokenSource cts, RecognitionSetup.Ready recognize, PolishSetup.Ready? polish, IInjectTarget target, StreamingLimits limits)
@@ -46,6 +50,11 @@ public sealed partial class SessionCoordinator
         public IInjectTarget Target { get; } = target;
         public StreamingLimits Limits { get; } = limits;
         public IStreamingRecorder Recorder { get; init; } = null!;
+
+        /// <summary>エンジンモード（<see cref="SessionCoordinator.BeginCapture"/>）のときだけ非 null。区間結果は投入ではなくここへ出す。</summary>
+        public ISegmentSink? Sink { get; init; }
+        public PolishContext? Context { get; init; }
+        public int SentSeq { get; set; }
         public SortedDictionary<int, Seg> Segs { get; } = [];
         public int NextSeq { get; set; } = 1;
         public int LastSeq { get; set; }
@@ -204,6 +213,18 @@ public sealed partial class SessionCoordinator
 
     private void OnStreamRecorderFailed(RecorderError error)
     {
+        if (_stream is { Sink: { } sink } engineRun)
+        {
+            // エンジンモード: 継続できない障害。未確定分は Hane が破棄するので、ここで打ち切って失敗で終える。
+            SafeCancelRecorder();
+            _stopping = false;
+            _stream = null;
+            CancelRun(engineRun);
+            _sessionId++;
+            sink.SessionEnded(EndStatus.Failed, engineRun.SentSeq, VoiceCodes.MicrophoneLost);
+            SetState(SessionState.Idle);
+            return;
+        }
         // マイク切断: デバイスは解放済みで、チャンネルは完了する。回収できた区間と確定済みの区間はフラッシュする。
         _stopping = false;
         Notify(NoticeKind.Error, error.Message);
@@ -219,6 +240,7 @@ public sealed partial class SessionCoordinator
         _stream = null;
         CancelRun(run);
         _sessionId++;
+        run.Sink?.SessionEnded(EndStatus.Cancelled, run.SentSeq, null);
         Notify(NoticeKind.Info, injecting
             ? "取消しました。入力済みの内容は残ります（送信済みの入力は反映される場合があります）"
             : "取消しました。入力済みの内容は残ります");
@@ -238,11 +260,12 @@ public sealed partial class SessionCoordinator
         run.Segs.Clear();
     }
 
-    private void AbortStreamOnError()
+    private void AbortStreamOnError(bool report = false)
     {
         if (_stream is not { } run) return;
         _stream = null;
         CancelRun(run);
+        if (report) run.Sink?.SessionEnded(EndStatus.Failed, run.SentSeq, VoiceCodes.EngineFailed);
     }
 
     // ── 区間の確定 ──
@@ -250,11 +273,12 @@ public sealed partial class SessionCoordinator
     private void OnSegmentCut(SegmentCutEvt e)
     {
         if (_stream is not { } run || run.Id != e.Id) return;
+        if (run.Sink is not null && e.Segment.Sequence > run.Limits.MaxSegments) return; // 上限を超えた区間は連番を割り当てない
         var seg = new Seg(e.Segment.Sequence, Stopwatch.GetTimestamp(), e.Segment.Pcm);
         run.LastSeq = Math.Max(run.LastSeq, seg.Seq);
         run.Segs[seg.Seq] = seg;
         var live = run.Segs.Values.Count(s => s != seg && s.State is not (SegState.Done or SegState.Dropped or SegState.Silent));
-        if (live >= run.Limits.MaxBufferedSegments) MarkDropped(run, seg); // 滞留の上限。連番は割り当て、PCM は解放する
+        if (live >= run.Limits.MaxBufferedSegments) MarkDropped(run, seg, VoiceCodes.Overloaded); // 滞留の上限。連番は割り当て、PCM は解放する
         ScheduleStream(run);
     }
 
@@ -282,6 +306,7 @@ public sealed partial class SessionCoordinator
 
     private void ScheduleStream(StreamRun run)
     {
+        if (run.Sink is not null) { ScheduleEngine(run); return; }
         CheckDeadlines(run);
         AdvanceOutput(run);
         StartPolishes(run);
@@ -303,20 +328,20 @@ public sealed partial class SessionCoordinator
                     if (flushing || Reached(now, s.ConfirmedTs, run.Limits.RecognitionDeadline))
                     {
                         CancelSeg(s);
-                        MarkDropped(run, s);
+                        MarkDropped(run, s, VoiceCodes.Timeout);
                     }
                     break;
                 case SegState.AwaitPolish:
-                    if (flushing || Reached(now, s.ConfirmedTs, run.Limits.PolishCutoff)) UseRaw(run, s);
+                    if (flushing || Reached(now, s.ConfirmedTs, run.Limits.PolishCutoff)) UseRaw(run, s, VoiceCodes.Timeout);
                     break;
                 case SegState.Polishing:
                     if (flushing || now >= s.PolishDeadlineTs)
                     {
                         CancelSeg(s);
-                        UseRaw(run, s);
+                        UseRaw(run, s, VoiceCodes.Timeout);
                     }
                     break;
-                case SegState.Ready:
+                case SegState.Ready when run.Sink is null: // エンジンモードに出力枠待ちはない（順序は原文の送出側で保つ）
                     if (sendOver || Reached(now, s.ConfirmedTs, run.Limits.OutputWait)) MarkDropped(run, s);
                     break;
             }
@@ -368,7 +393,7 @@ public sealed partial class SessionCoordinator
             var now = Stopwatch.GetTimestamp();
             // 整文は開始から Timeout、かつ区間確定から PolishCutoff 以内（枠待ちも含む）。
             var deadline = Math.Min(now + Ticks(polish.Timeout), s.ConfirmedTs + Ticks(run.Limits.PolishCutoff));
-            if (deadline <= now) { UseRaw(run, s); continue; }
+            if (deadline <= now) { UseRaw(run, s, VoiceCodes.Timeout); continue; }
             s.PolishDeadlineTs = deadline;
             var cts = s.Cts = CancellationTokenSource.CreateLinkedTokenSource(run.Cts.Token);
             cts.CancelAfter(TimeSpan.FromSeconds((double)(deadline - now) / Stopwatch.Frequency));
@@ -379,7 +404,7 @@ public sealed partial class SessionCoordinator
             {
                 try
                 {
-                    Post(new SegPolishedEvt(id, seq, await polish.RunAsync(new PolishInput(raw), token).ConfigureAwait(false)));
+                    Post(new SegPolishedEvt(id, seq, await polish.RunAsync(new PolishInput(raw, run.Context), token).ConfigureAwait(false)));
                 }
                 catch
                 {
@@ -444,6 +469,7 @@ public sealed partial class SessionCoordinator
             s.Pcm = null;
             var text = e.Result?.Text.Trim() ?? "";
             if (e.Error is not null) MarkDropped(run, s);
+            else if (run.Sink is not null && System.Text.Encoding.UTF8.GetByteCount(text) > MaxSegmentTextBytes) MarkDropped(run, s);
             else if (text.Length == 0)
             {
                 s.State = SegState.Silent; // 空の結果は欠落とは別に数える（固定分割では無音かどうか判別できない）
@@ -467,12 +493,13 @@ public sealed partial class SessionCoordinator
         run.PolishRunning--;
         if (run.Segs.TryGetValue(e.Seq, out var s) && s.State == SegState.Polishing)
         {
-            if (e.Result.IsSuccess && !string.IsNullOrWhiteSpace(e.Result.Text))
+            if (e.Result.IsSuccess && !string.IsNullOrWhiteSpace(e.Result.Text)
+                && (run.Sink is null || System.Text.Encoding.UTF8.GetByteCount(e.Result.Text.Trim()) <= MaxSegmentTextBytes))
             {
                 s.Final = e.Result.Text.Trim();
                 s.State = SegState.Ready;
             }
-            else UseRaw(run, s);
+            else UseRaw(run, s, e.Result.IsSuccess || e.Result.Failure != PolishFailure.Timeout ? VoiceCodes.PolishFailed : VoiceCodes.Timeout);
         }
         ScheduleStream(run);
     }
@@ -528,9 +555,10 @@ public sealed partial class SessionCoordinator
 
     // ── 区間の確定結果 ──
 
-    private void MarkDropped(StreamRun run, Seg s)
+    private void MarkDropped(StreamRun run, Seg s, string code = VoiceCodes.RecognitionFailed)
     {
         s.State = SegState.Dropped;
+        s.Code = code;
         s.Pcm = null;
         s.Raw = null;
         run.Dropped++;
@@ -543,8 +571,9 @@ public sealed partial class SessionCoordinator
     }
 
     /// <summary>整文できなかった（時間切れ・失敗・空）ので、認識原文を出力候補にする。</summary>
-    private static void UseRaw(StreamRun run, Seg s)
+    private static void UseRaw(StreamRun run, Seg s, string code = VoiceCodes.PolishFailed)
     {
+        s.PolishCode = code;
         s.Final = s.Raw;
         s.RawFallback = true;
         s.State = SegState.Ready;

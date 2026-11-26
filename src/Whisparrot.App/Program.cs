@@ -19,6 +19,9 @@ internal static class Program
         // 認識ワーカー: 二重起動の mutex には掛けない（親が起動する子）。
         if (args.Contains(WorkerHost.Flag)) return WorkerHost.Run(args, resources, AppInfo.Version);
 
+        // エンジンモード（Hane が起動する子）: 同じく mutex より前に分岐し、ホットキー・トレイ・UI・自己更新を通さない。
+        if (args.Contains(VoiceEngineCommand.Flag)) return VoiceEngineCommand.Run(args);
+
         if (args.Length > 0 && args[0] == TranscribeCommand.Name) return TranscribeCommand.Run(args, resources);
 
         if (args.Length > 0 && args[0] == "--native-info") return Diagnostics.NativeInfo(resources);

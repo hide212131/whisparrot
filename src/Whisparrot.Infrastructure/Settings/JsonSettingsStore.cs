@@ -15,10 +15,13 @@ public sealed class JsonSettingsStore
 {
     private readonly object _lock = new();
     private readonly Func<DateTimeOffset> _clock;
+    private readonly bool _readOnly;
     private SettingsLoadResult? _loaded;
 
-    public JsonSettingsStore(string path, Func<DateTimeOffset>? clock = null)
+    /// <param name="readOnly">読み取り専用で開く（エンジンモード）。読み込みで一時ファイルの掃除もしない。保存は呼ばない前提。</param>
+    public JsonSettingsStore(string path, Func<DateTimeOffset>? clock = null, bool readOnly = false)
     {
+        _readOnly = readOnly;
         Path = System.IO.Path.GetFullPath(path);
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
     }
@@ -32,7 +35,7 @@ public sealed class JsonSettingsStore
     {
         lock (_lock)
         {
-            CleanStaleTempFiles();
+            if (!_readOnly) CleanStaleTempFiles();
             return _loaded = Read();
         }
     }
