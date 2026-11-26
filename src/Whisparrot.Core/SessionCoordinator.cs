@@ -133,7 +133,7 @@ public sealed partial class SessionCoordinator : IDisposable
             {
                 // 状態機械自身の想定外。資源を解放して待機へ戻す。
                 SafeCancelRecorder();
-                AbortStreamOnError();
+                AbortStreamOnError(report: true);
                 _sessionCts?.Cancel();
                 _pendingText = null;
                 _rawText = null;
@@ -150,6 +150,7 @@ public sealed partial class SessionCoordinator : IDisposable
         {
             case BarrierEvt b: b.Tcs.TrySetResult(); break;
             case ToggleEvt: OnToggle(); break;
+            case EngineBeginEvt b: OnEngineBegin(b); break;
             case StopEvt: if (_state == SessionState.Recording) BeginStop(); break;
             case SegmentCutEvt s: OnSegmentCut(s); break;
             case IntakeEndedEvt i: OnIntakeEnded(i); break;

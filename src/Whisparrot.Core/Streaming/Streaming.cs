@@ -153,4 +153,7 @@ public sealed record StreamingLimits
 
     /// <summary>区間確定から出力の終端までの保持上限。超えて新たに切れた区間は欠落として進む。</summary>
     public int MaxBufferedSegments { get; init; } = 8;
+
+    /// <summary>エンジンモードで 1 回の録音に割り当てる区間の上限（設計 §2.2）。</summary>
+    public int MaxSegments { get; init; } = 512;
 }

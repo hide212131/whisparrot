@@ -6,7 +6,8 @@
 .PARAMETER Backend
   cpu (default) | vulkan (x64 only). CUDA is out of scope for v1.
 .PARAMETER Version
-  Release version (e.g. 0.2.0). Passed as /p:Version and /p:InformationalVersion; default is the project's Version.
+  Release version (e.g. 0.4.0). Passed as /p:Version and /p:InformationalVersion; default is the project's Version
+  (Directory.Build.props, kept at the current release version so an unversioned publish still registers a usable version).
 .PARAMETER Out
   Output root (outside the repository is recommended). Default: out\<rid>\ under the repo.
 #>
