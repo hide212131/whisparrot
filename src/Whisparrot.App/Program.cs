@@ -1,6 +1,7 @@
 using Whisparrot.App.Windows;
 using Whisparrot.Core.Update;
 using Whisparrot.Infrastructure.Recognition;
+using Whisparrot.Infrastructure.Voice;
 
 namespace Whisparrot.App;
 
@@ -57,6 +58,9 @@ internal static class Program
 
         // 前回の新版が正常起動した印があれば、旧版の退避を片付ける（再起動直後の起動では消さない）。
         ExeSwapper.CleanOnStart(SwapPlan.For(Environment.ProcessPath!), afterUpdate);
+
+        // 検出用の自己登録: 常駐側だけが、現在の exe パスと版で上書きする（自己更新後の再起動でも新しい値になる）。エンジンモードは上で分岐済みで書かない。
+        EngineRegistration.TryWrite(Environment.ProcessPath!, AppInfo.Version, DateTimeOffset.UtcNow);
 
         return TrayApp.Run(resources, afterUpdate);
     }
